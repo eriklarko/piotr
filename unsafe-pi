@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# unsafe-pi — run the kit-pinned pi coding agent on the host (no sandbox).
+# Install: `make install` (symlinks this file into ~/.local/bin/unsafe-pi).
+# pi itself is never on PATH; only this wrapper is.
+set -euo pipefail
+
+PI_PACKAGE="@earendil-works/pi-coding-agent"
+HOST_PI_PREFIX="${HOME}/.pi-sbx/host-pi"
+HOST_PI_BIN="${HOST_PI_PREFIX}/node_modules/.bin/pi"
+
+resolve_self() {
+  local src="$1" dir
+  while [ -L "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  echo "$(cd -P "$(dirname "$src")" && pwd)"
+}
+
+REPO_DIR="$(resolve_self "$0")"
+VERSION_FILE="$REPO_DIR/kit/pi-version"
+
+die() { echo "unsafe-pi: $*" >&2; exit 1; }
+info() { echo "unsafe-pi: $*" >&2; }
+
+cmd_help() {
+  cat <<EOF
+unsafe-pi — run the kit-pinned pi coding agent on the host (unsandboxed).
+
+Usage:
+  unsafe-pi                 start pi against the current directory
+  unsafe-pi <args...>       pass args/flags through to pi
+  unsafe-pi --help          show this message
+
+Installs ${PI_PACKAGE}@\$(cat kit/pi-version) under ${HOST_PI_PREFIX}
+and execs that binary by absolute path. pi is never added to PATH.
+
+This has full access to your host filesystem and network. Prefer safe-pi
+unless you need that (e.g. debugging blocked downloads).
+
+Upgrade the pin with: make upgrade-pi
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) cmd_help; exit 0 ;;
+esac
+
+[ -f "$VERSION_FILE" ] || die "missing $VERSION_FILE"
+VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+[ -n "$VERSION" ] || die "empty version in $VERSION_FILE"
+
+command -v node >/dev/null 2>&1 || die "node not found — install Node.js on the host"
+command -v npm >/dev/null 2>&1 || die "npm not found — install Node.js on the host"
+
+installed=""
+if [ -x "$HOST_PI_BIN" ]; then
+  installed="$(npm list --prefix "$HOST_PI_PREFIX" --depth=0 --json "$PI_PACKAGE" 2>/dev/null \
+    | node -e '
+      let s=""; process.stdin.on("data",d=>s+=d); process.stdin.on("end",()=>{
+        try {
+          const j=JSON.parse(s);
+          const v=j.dependencies && j.dependencies["'"$PI_PACKAGE"'"] && j.dependencies["'"$PI_PACKAGE"'"].version;
+          if (v) process.stdout.write(v);
+        } catch {}
+      });
+    ' || true)"
+fi
+
+if [ "$installed" != "$VERSION" ]; then
+  info "installing ${PI_PACKAGE}@${VERSION} into ${HOST_PI_PREFIX}"
+  mkdir -p "$HOST_PI_PREFIX"
+  npm install --prefix "$HOST_PI_PREFIX" "${PI_PACKAGE}@${VERSION}"
+fi
+
+[ -x "$HOST_PI_BIN" ] || die "pi binary missing at $HOST_PI_BIN after install"
+
+info "unsandboxed — full host filesystem and network access"
+exec "$HOST_PI_BIN" "$@"

@@ -1,0 +1,9 @@
+experiments
+dev
+
+# Leftovers from the pre-Sandboxes container setup
+.pi-data
+.secrets
+workspace
+.env
+github_token.txt

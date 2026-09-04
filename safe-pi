@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# safe-pi — run the pi coding agent in a Docker Sandbox against $PWD.
+# Install: `make install` (symlinks this file into ~/.local/bin/safe-pi).
+set -euo pipefail
+
+CONFIG_DIR="$HOME/.pi-sbx"
+CONFIG_FILE="$CONFIG_DIR/config"
+
+resolve_self() {
+  local src="$1" dir
+  while [ -L "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  echo "$(cd -P "$(dirname "$src")" && pwd)"
+}
+
+REPO_DIR="$(resolve_self "$0")"
+KIT_DIR="$REPO_DIR/kit"
+
+# Host directory of global pi extensions, shared read-only with every sandbox.
+# pi auto-discovers ~/.pi/agent/extensions/*.ts and */index.ts.
+HOST_EXT_DIR="$HOME/.pi/agent/extensions"
+
+# Host directory of pi sessions, shared read-write with every sandbox.
+# pi stores sessions under ~/.pi/agent/sessions/--<encoded-cwd>--/.
+HOST_SESSIONS_DIR="$HOME/.pi/agent/sessions"
+
+# Host directory for agent memory (e.g. pi-self-learning), shared read-write.
+HOST_MEMORY_DIR="$HOME/.pi/memory"
+
+die() { echo "safe-pi: $*" >&2; exit 1; }
+info() { echo "safe-pi: $*" >&2; }
+
+need_sbx() {
+  command -v sbx >/dev/null 2>&1 || die "sbx not found. Install it with 'brew install docker/tap/sbx' and run 'sbx login'."
+}
+
+# Sandbox name derived from the workspace directory, so re-running from the
+# same project reconnects instead of creating a second VM.
+sandbox_name() {
+  local raw name
+  raw="$(basename "$1")"
+  name="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]-' '-' | sed 's/-\{2,\}/-/g; s/^-*//; s/-*$//')"
+  [ -n "$name" ] || name=workspace
+  printf 'pi-%s' "$name"
+}
+
+sandbox_exists() {
+  sbx ls 2>/dev/null | awk -v n="$1" 'NR>1 && $1==n { found=1 } END { exit !found }'
+}
+
+load_config() {
+  [ -f "$CONFIG_FILE" ] || die "no config at $CONFIG_FILE — run 'safe-pi init' first"
+  set -a
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+  set +a
+}
+
+# Store the GitHub token on the host. The real value never enters the VM; the
+# host proxy injects it into outbound GitHub requests.
+store_github_secret() {
+  local token="${GITHUB_TOKEN:-}"
+  if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
+  fi
+  if [ -z "$token" ]; then
+    info "no GitHub token found (set GITHUB_TOKEN in $CONFIG_FILE or run 'gh auth login') — gh inside the sandbox will not be authenticated"
+    return 0
+  fi
+  printf '%s' "$token" | sbx secret set -g github
+  info "stored GitHub token as a global sbx secret"
+}
+
+# Allow the sandbox to reach a model server on the host. The proxy rewrites
+# host.docker.internal to localhost, so the policy rule targets localhost.
+apply_offline_policy() {
+  [ -n "${OFFLINE_PORT:-}" ] || return 0
+  info "allowing sandbox to reach host model server on localhost:$OFFLINE_PORT"
+  sbx policy allow network "localhost:${OFFLINE_PORT}"
+}
+
+# Point pi at the host model server. localhost inside the VM is the VM itself,
+# so the base URL must use host.docker.internal.
+configure_offline_model() {
+  local name="$1"
+  [ -n "${OFFLINE_PORT:-}" ] || return 0
+  [ -n "${OFFLINE_MODEL:-}" ] || die "OFFLINE_PORT is set but OFFLINE_MODEL is empty in $CONFIG_FILE"
+
+  info "pointing pi at http://host.docker.internal:${OFFLINE_PORT}/v1 (model: ${OFFLINE_MODEL})"
+  sbx exec -i "$name" bash -c 'mkdir -p ~/.pi/agent && cat > ~/.pi/agent/models.json' <<EOF
+{
+  "providers": {
+    "llama-cpp": {
+      "baseUrl": "http://host.docker.internal:${OFFLINE_PORT}/v1",
+      "api": "openai-completions",
+      "apiKey": "none",
+      "models": [
+        { "id": "${OFFLINE_MODEL}" }
+      ]
+    }
+  }
+}
+EOF
+
+  # Merge rather than overwrite: pi and sync_packages also write to this file.
+  merge_settings "$name" <<EOF
+{
+  "defaultProvider": "llama-cpp",
+  "defaultModel": "${OFFLINE_MODEL}",
+  "autocompleteMaxVisible": 7,
+  "defaultThinkingLevel": "off"
+}
+EOF
+}
+
+# Shallow-merge a JSON object from stdin into the sandbox's ~/.pi/agent/settings.json.
+merge_settings() {
+  local name="$1"
+  sbx exec -i "$name" bash -lc 'mkdir -p ~/.pi/agent && node -e "
+    const fs = require(\"fs\");
+    const file = process.env.HOME + \"/.pi/agent/settings.json\";
+    const patch = JSON.parse(fs.readFileSync(0, \"utf8\"));
+    let current = {};
+    try { current = JSON.parse(fs.readFileSync(file, \"utf8\")); } catch {}
+    fs.writeFileSync(file, JSON.stringify({ ...current, ...patch }, null, 2) + \"\\n\");
+  "'
+}
+
+# Mirror the host's global pi packages (~/.pi/agent/settings.json "packages")
+# into the sandbox. The installed tree is not shared: the host's node_modules
+# is built for macOS, so each package is installed natively inside the VM with
+# `pi install`, then the host's package list (including any filters) is copied
+# over verbatim. Local-path packages are skipped since the path does not exist
+# in the VM.
+sync_packages() {
+  local name="$1" host_settings="$HOME/.pi/agent/settings.json"
+  [ -f "$host_settings" ] || return 0
+  info "syncing pi packages from $host_settings into the sandbox"
+  sbx exec -i "$name" bash -lc 'node -e "
+    const fs = require(\"fs\");
+    const { execFileSync } = require(\"child_process\");
+    const host = JSON.parse(fs.readFileSync(0, \"utf8\"));
+    const packages = Array.isArray(host.packages) ? host.packages : [];
+    const keep = [];
+    for (const entry of packages) {
+      const source = typeof entry === \"string\" ? entry : entry && entry.source;
+      if (!source) continue;
+      if (source.startsWith(\"/\") || source.startsWith(\".\")) {
+        console.error(\"safe-pi: skipping local-path package \" + source + \" (not present in the VM)\");
+        continue;
+      }
+      console.error(\"safe-pi: pi install \" + source);
+      execFileSync(\"/usr/lib/pi-kit/pi/node_modules/.bin/pi\", [\"install\", source], { stdio: [\"ignore\", \"inherit\", \"inherit\"] });
+      keep.push(entry);
+    }
+    const file = process.env.HOME + \"/.pi/agent/settings.json\";
+    let current = {};
+    try { current = JSON.parse(fs.readFileSync(file, \"utf8\")); } catch {}
+    current.packages = keep;
+    fs.writeFileSync(file, JSON.stringify(current, null, 2) + \"\\n\");
+  "' < "$host_settings"
+}
+
+configure_git_identity() {
+  local name="$1"
+  [ -n "${GIT_NAME:-}" ] && sbx exec "$name" git config --global user.name "$GIT_NAME"
+  [ -n "${GIT_EMAIL:-}" ] && sbx exec "$name" git config --global user.email "$GIT_EMAIL"
+  # The signing key stays on the host and is unreachable from the VM.
+  sbx exec "$name" git config --global commit.gpgsign false
+  return 0
+}
+
+# Extra workspaces mount at their host absolute path, so a shared directory
+# lands at that host path inside the VM rather than at pi's expected location
+# under ~/.pi/agent. Symlink the latter to the former.
+link_host_path() {
+  local name="$1" src="$2" rel="$3" mode="${4:-}"
+  info "linking ~/$rel -> $src${mode:+ ($mode)} inside the sandbox"
+  sbx exec "$name" bash -c '
+    set -eu
+    src="$1" target="$HOME/$2"
+    mkdir -p "$(dirname "$target")"
+    if [ -L "$target" ] || [ ! -e "$target" ]; then
+      ln -sfn "$src" "$target"
+    else
+      echo "safe-pi: $target already exists in the sandbox and is not a symlink; leaving it alone" >&2
+    fi
+  ' _ "$src" "$rel"
+}
+
+create_sandbox() {
+  local name="$1" clone="$2"
+  info "creating sandbox '$name' for $PWD"
+  mkdir -p "$HOST_EXT_DIR" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+  apply_offline_policy
+  if [ "$clone" -eq 1 ]; then
+    sbx create --kit "$KIT_DIR" --clone --name "$name" pi "$PWD" "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+  else
+    sbx create --kit "$KIT_DIR" --name "$name" pi "$PWD" "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+  fi
+  link_host_path "$name" "$HOST_EXT_DIR" ".pi/agent/extensions" "read-only"
+  link_host_path "$name" "$HOST_SESSIONS_DIR" ".pi/agent/sessions" "read-write"
+  link_host_path "$name" "$HOST_MEMORY_DIR" ".pi/memory" "read-write"
+  configure_git_identity "$name"
+  configure_offline_model "$name"
+  sync_packages "$name"
+}
+
+cmd_init() {
+  need_sbx
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR"
+
+  if [ -f "$CONFIG_FILE" ]; then
+    info "$CONFIG_FILE already exists — leaving it alone"
+  else
+    cat > "$CONFIG_FILE" <<'EOF'
+# safe-pi configuration
+
+# Git identity used for commits made inside the sandbox.
+GIT_NAME=
+GIT_EMAIL=
+
+# GitHub token stored on the host and injected by the sandbox proxy.
+# Leave empty to reuse the token from `gh auth token`.
+GITHUB_TOKEN=
+
+# Offline / local model server.
+# Leave OFFLINE_PORT empty to use a cloud provider instead.
+# The server must listen on the host; the sandbox reaches it through
+# host.docker.internal, never 127.0.0.1.
+OFFLINE_PORT=
+OFFLINE_MODEL=
+EOF
+    chmod 600 "$CONFIG_FILE"
+    info "created $CONFIG_FILE — edit it to set your git identity and token"
+  fi
+
+  load_config
+  store_github_secret
+  echo
+  info "next: edit $CONFIG_FILE, then run 'safe-pi' from any project directory"
+}
+
+cmd_login() {
+  need_sbx
+  load_config
+  store_github_secret
+}
+
+cmd_offline() {
+  need_sbx
+  load_config
+  local name
+  name="$(sandbox_name "$PWD")"
+  apply_offline_policy
+  sandbox_exists "$name" || die "no sandbox for this directory yet — run 'safe-pi' first"
+  configure_offline_model "$name"
+}
+
+cmd_sync() {
+  need_sbx
+  local name
+  name="$(sandbox_name "$PWD")"
+  sandbox_exists "$name" || die "no sandbox for this directory yet — run 'safe-pi' first"
+  sync_packages "$name"
+}
+
+cmd_rm() {
+  need_sbx
+  local name
+  name="$(sandbox_name "$PWD")"
+  sandbox_exists "$name" || die "no sandbox named '$name'"
+  sbx rm "$name"
+}
+
+cmd_help() {
+  cat <<EOF
+safe-pi — run the pi coding agent in a Docker Sandbox against \$PWD.
+
+Usage:
+  safe-pi                 start pi against the current directory
+  safe-pi <args...>       pass args/flags through to pi (e.g. safe-pi --version)
+  safe-pi --clone         start pi on a private in-VM git clone (host repo read-only)
+  safe-pi --shell         open a shell inside the sandbox
+  safe-pi init            create $CONFIG_FILE and store the GitHub token
+  safe-pi login           re-store the GitHub token on the host
+  safe-pi offline         re-apply the local model config to this sandbox
+  safe-pi sync            re-install the host's global pi packages into this sandbox
+  safe-pi rm              delete the sandbox for the current directory
+  safe-pi --help          show this message
+
+Config lives at $CONFIG_FILE.
+Each project directory gets its own sandbox; state persists until 'safe-pi rm'.
+Global pi extensions in $HOST_EXT_DIR are shared read-only with every sandbox.
+Global pi sessions in $HOST_SESSIONS_DIR are shared read-write with every sandbox
+(keyed by encoded cwd/repo path).
+Global pi memory in $HOST_MEMORY_DIR is shared read-write with every sandbox.
+Global pi packages listed in ~/.pi/agent/settings.json are installed into each
+sandbox at creation; run 'safe-pi sync' after changing them on the host.
+EOF
+}
+
+case "${1:-}" in
+  init) cmd_init; exit 0 ;;
+  login) shift; cmd_login; exit 0 ;;
+  offline) shift; cmd_offline; exit 0 ;;
+  sync) shift; cmd_sync; exit 0 ;;
+  rm) shift; cmd_rm; exit 0 ;;
+  -h|--help) cmd_help; exit 0 ;;
+esac
+
+need_sbx
+load_config
+
+CLONE=0
+SHELL_MODE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --clone) CLONE=1; shift ;;
+    --shell) SHELL_MODE=1; shift ;;
+    *) break ;;
+  esac
+done
+
+NAME="$(sandbox_name "$PWD")"
+
+if ! sandbox_exists "$NAME"; then
+  create_sandbox "$NAME" "$CLONE"
+elif [ "$CLONE" -eq 1 ]; then
+  info "sandbox '$NAME' already exists; --clone is fixed at creation time (run 'safe-pi rm' first to change it)"
+fi
+
+if [ "$SHELL_MODE" -eq 1 ]; then
+  exec sbx exec -it "$NAME" bash
+elif [ $# -gt 0 ]; then
+  exec sbx run --name "$NAME" -- "$@"
+else
+  exec sbx run --name "$NAME"
+fi

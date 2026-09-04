@@ -1,0 +1,135 @@
+schemaVersion: "1"
+kind: sandbox
+name: pi
+displayName: Pi
+description: The pi coding agent, running in an isolated Docker Sandbox.
+
+sandbox:
+  image: "docker/sandbox-templates:shell"
+  aiFilename: AGENTS.md
+  entrypoint:
+    # Private-prefix install (not on PATH). Keep in sync with kit/pi-version.
+    run: [/usr/lib/pi-kit/pi/node_modules/.bin/pi]
+
+environment:
+  variables:
+    # The proxy swaps the real token into outbound GitHub requests. This
+    # placeholder only exists so gh believes it is authenticated.
+    GH_TOKEN: proxy-managed
+    GITHUB_TOKEN: proxy-managed
+    PARANOID_MODE: "true"
+
+network:
+  # Domain-level allowlist. If pi or a tool gets blocked, find the domain in
+  # `sbx policy log` and add it here.
+  allowedDomains:
+    # Toolchain installation
+    - "nodejs.org:443"
+    - "registry.npmjs.org:443"
+    # GitHub API, git over HTTPS, and release downloads
+    - "github.com:443"
+    - "api.github.com:443"
+    - "codeload.github.com:443"
+    - "raw.githubusercontent.com:443"
+    - "objects.githubusercontent.com:443"
+    - "release-assets.githubusercontent.com:443"
+    # GitHub Copilot models
+    - "api.githubcopilot.com:443"
+    - "api.individual.githubcopilot.com:443"
+    - "copilot-proxy.githubusercontent.com:443"
+    # Other model providers pi can be pointed at
+    - "api.anthropic.com:443"
+    - "api.openai.com:443"
+    - "generativelanguage.googleapis.com:443"
+
+commands:
+  install:
+    - description: Install Node.js 22
+      command: |
+        set -eu
+        if command -v node >/dev/null 2>&1 && [ "$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')" -ge 22 ]; then
+          exit 0
+        fi
+        NODE_VERSION=v22.22.0
+        case "$(uname -m)" in
+          x86_64) NODE_ARCH=linux-x64 ;;
+          aarch64|arm64) NODE_ARCH=linux-arm64 ;;
+          *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+        curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
+        tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+        rm /tmp/node.tar.xz
+
+    - description: Install pi
+      command: |
+        set -eu
+        # Version pin must match kit/pi-version (enforced by `make validate`).
+        npm install --prefix /usr/lib/pi-kit/pi @earendil-works/pi-coding-agent@0.84.4
+
+    - description: Install GitHub CLI
+      command: |
+        set -eu
+        GH_VERSION=2.83.0
+        case "$(uname -m)" in
+          x86_64) GH_ARCH=amd64 ;;
+          aarch64|arm64) GH_ARCH=arm64 ;;
+          *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+        esac
+        curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz
+        install -d /usr/lib/pi-kit
+        tar -xzf /tmp/gh.tar.gz -C /tmp
+        install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/lib/pi-kit/gh-real
+        rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}"
+
+    - description: Install gh-guard wrapper as the only gh on PATH
+      command: |
+        set -eu
+        cat > /usr/local/bin/gh <<'GUARD'
+        #!/usr/bin/env bash
+        # gh-guard — blocks gh subcommands that could grant an agent persistent
+        # access to the GitHub account itself, rather than to a repository.
+        #
+        # This is a guardrail, not a security boundary: the agent has sudo inside
+        # the VM and the host proxy authenticates any request to api.github.com,
+        # however it is made. Scope your token accordingly.
+        set -euo pipefail
+
+        if [ "${PARANOID_MODE:-true}" = "true" ]; then
+          case "${1:-}" in
+            auth|repo|secret|ssh-key|gpg-key)
+              echo "[SYSTEM BLOCK] Paranoid mode is active. The agent is not authorized to execute 'gh $1'." >&2
+              exit 1
+              ;;
+          esac
+        fi
+
+        exec /usr/lib/pi-kit/gh-real "$@"
+        GUARD
+        chmod 0755 /usr/local/bin/gh
+
+    - description: Point git at gh for GitHub credentials
+      command: |
+        set -eu
+        mkdir -p /home/agent/.pi/agent
+        chown -R agent:agent /home/agent/.pi
+        su agent -c 'git config --global credential.https://github.com.helper "!/usr/local/bin/gh auth git-credential"'
+
+agentContext: |
+  ## Sandbox environment
+
+  You are running as the pi coding agent inside a Docker Sandbox microVM.
+
+  - The workspace is mounted at its absolute host path. That is your working
+    directory.
+  - `sudo` is passwordless. Use it for package installs.
+  - Network access is deny-by-default and proxied through the host. Only
+    allowlisted domains resolve; raw TCP, UDP, and ICMP are blocked. If a
+    request fails with a policy error, tell the user which domain you need
+    rather than trying to work around it.
+  - The GitHub token is never present in this VM. `GH_TOKEN` holds a
+    placeholder and the host proxy injects the real credential into outbound
+    GitHub requests, so `gh` and `git push` work normally.
+  - `gh auth`, `gh repo`, `gh secret`, `gh ssh-key`, and `gh gpg-key` are
+    blocked on purpose. Do not attempt to bypass the wrapper.
+  - A service on the host is reachable at `host.docker.internal`, never at
+    `localhost` — `localhost` is this VM.
