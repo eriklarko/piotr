@@ -19,16 +19,37 @@ resolve_self() {
 REPO_DIR="$(resolve_self "$0")"
 KIT_DIR="$REPO_DIR/kit"
 
-# Host directory of global pi extensions, shared read-only with every sandbox.
+# Pi configuration is tracked in this repo under dotpi/ and symlinked to ~/.pi.
+# Sandboxes read the repo paths directly instead of going through that symlink,
+# so sbx never has to resolve it when setting up mounts.
+DOTPI_DIR="$REPO_DIR/dotpi"
+HOST_SETTINGS="$DOTPI_DIR/agent/settings.json"
+
+# Global pi extensions, shared read-only with every sandbox.
 # pi auto-discovers ~/.pi/agent/extensions/*.ts and */index.ts.
-HOST_EXT_DIR="$HOME/.pi/agent/extensions"
+HOST_EXT_DIR="$DOTPI_DIR/agent/extensions"
 
-# Host directory of pi sessions, shared read-write with every sandbox.
+# Pi sessions, shared read-write with every sandbox.
 # pi stores sessions under ~/.pi/agent/sessions/--<encoded-cwd>--/.
-HOST_SESSIONS_DIR="$HOME/.pi/agent/sessions"
+HOST_SESSIONS_DIR="$DOTPI_DIR/agent/sessions"
 
-# Host directory for agent memory (e.g. pi-self-learning), shared read-write.
-HOST_MEMORY_DIR="$HOME/.pi/memory"
+# Pi keybindings, shared read-only with every sandbox.
+HOST_KEYBINDINGS="$DOTPI_DIR/agent/keybindings.json"
+
+# Agent memory (e.g. @samfp/pi-memory), shared read-write.
+HOST_MEMORY_DIR="$DOTPI_DIR/memory"
+
+# Domains needed to download the embedder model. These are allowed only
+# transiently, scoped to a single sandbox, while warming the cache at creation
+# time — they are never added to the kit allowlist, and the rule is always
+# removed before the agent runs. '**.hf.co' covers the regional CDN the weights
+# redirect to (e.g. us.aws.cdn.hf.co), which differs per location.
+HF_WARM_DOMAINS="huggingface.co:443,**.hf.co:443"
+
+# Model @samfp/pi-memory loads through @xenova/transformers. Must match the
+# package's own model id and quantization, otherwise pi-memory fetches its own
+# copy at runtime and fails, since the domains above are closed by then.
+EMBEDDER_MODEL="Xenova/all-MiniLM-L6-v2"
 
 die() { echo "safe-pi: $*" >&2; exit 1; }
 info() { echo "safe-pi: $*" >&2; }
@@ -136,7 +157,7 @@ merge_settings() {
 # over verbatim. Local-path packages are skipped since the path does not exist
 # in the VM.
 sync_packages() {
-  local name="$1" host_settings="$HOME/.pi/agent/settings.json"
+  local name="$1" host_settings="$HOST_SETTINGS"
   [ -f "$host_settings" ] || return 0
   info "syncing pi packages from $host_settings into the sandbox"
   sbx exec -i "$name" bash -lc 'node -e "
@@ -162,6 +183,49 @@ sync_packages() {
     current.packages = keep;
     fs.writeFileSync(file, JSON.stringify(current, null, 2) + \"\\n\");
   "' < "$host_settings"
+}
+
+# Download the embedder model @samfp/pi-memory uses, so semantic memory search
+# works with the network closed. The model is fetched inside the VM and resolved
+# from pi's npm root, so it lands in the cache directory the package itself
+# reads from — no host path is mirrored and no cache location is hardcoded.
+warm_embedder_cache() {
+  local name="$1" host_settings="$HOST_SETTINGS"
+
+  # Only pay the download cost if the host actually runs pi-memory.
+  [ -f "$host_settings" ] || return 0
+  grep -q 'pi-memory' "$host_settings" || return 0
+
+  info "warming the embedder cache (temporarily allowing $HF_WARM_DOMAINS for '$name')"
+  sbx policy allow network --sandbox "$name" "$HF_WARM_DOMAINS" >/dev/null
+
+  # Close the hole on every exit path, including failure and Ctrl-C. 'sbx policy
+  # rm' exits non-zero when the rule is already gone, hence the '|| true'.
+  # shellcheck disable=SC2064
+  trap "sbx policy rm network --sandbox '$name' --resource '$HF_WARM_DOMAINS' >/dev/null 2>&1 || true" EXIT INT TERM
+
+  # A cold cache is a warning, not a failure: pi-memory degrades to keyword
+  # search on its own, so neither the script nor a failed exec aborts creation.
+  # The script is piped straight to node rather than written to a temp file, so
+  # there is no fixed path in /tmp for anything else to squat on.
+  sbx exec -i "$name" bash -lc 'node --input-type=module -e "$(cat)"' <<EOF || true
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
+try {
+  const require = createRequire(process.env.HOME + "/.pi/agent/npm/node_modules/");
+  const { pipeline, env } = await import(pathToFileURL(require.resolve("@xenova/transformers")).href);
+  env.allowRemoteModels = true;
+  await pipeline("feature-extraction", "${EMBEDDER_MODEL}", { quantized: true });
+  console.error("safe-pi: cached ${EMBEDDER_MODEL}");
+} catch (err) {
+  console.error("safe-pi: could not cache ${EMBEDDER_MODEL} (" + (err?.message ?? err) + "); memory falls back to keyword search");
+}
+process.exit(0);
+EOF
+
+  sbx policy rm network --sandbox "$name" --resource "$HF_WARM_DOMAINS" >/dev/null 2>&1 || true
+  trap - EXIT INT TERM
+  info "embedder warm-up finished; network rule removed"
 }
 
 configure_git_identity() {
@@ -191,22 +255,51 @@ link_host_path() {
   ' _ "$src" "$rel"
 }
 
+# True when $1 is $2 or a parent directory of $2.
+is_ancestor_or_same() {
+  case "$2/" in "$1"/*) return 0 ;; esac
+  return 1
+}
+
+# The shared pi directories now live inside this repo, so running safe-pi from
+# the repo (or any ancestor of it) would hand sbx a workspace mount plus three
+# mounts nested underneath it. Overlapping mounts are not something sbx promises
+# to handle, so drop the redundant ones: the workspace mount already exposes
+# those paths, and since every mount lands at its host absolute path, the in-VM
+# symlinks created by link_host_path are correct either way.
+extra_mounts() {
+  if is_ancestor_or_same "$PWD" "$DOTPI_DIR"; then
+    info "dotpi is inside this workspace; skipping the nested extension/session/memory mounts"
+    return 0
+  fi
+  printf '%s\n' "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+  [ -f "$HOST_KEYBINDINGS" ] && printf '%s\n' "$HOST_KEYBINDINGS:ro"
+}
+
 create_sandbox() {
   local name="$1" clone="$2"
   info "creating sandbox '$name' for $PWD"
   mkdir -p "$HOST_EXT_DIR" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
   apply_offline_policy
+
+  local mounts=()
+  while IFS= read -r m; do
+    [ -n "$m" ] && mounts+=("$m")
+  done < <(extra_mounts)
+
   if [ "$clone" -eq 1 ]; then
-    sbx create --kit "$KIT_DIR" --clone --name "$name" pi "$PWD" "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+    sbx create --kit "$KIT_DIR" --clone --name "$name" pi "$PWD" ${mounts+"${mounts[@]}"}
   else
-    sbx create --kit "$KIT_DIR" --name "$name" pi "$PWD" "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+    sbx create --kit "$KIT_DIR" --name "$name" pi "$PWD" ${mounts+"${mounts[@]}"}
   fi
   link_host_path "$name" "$HOST_EXT_DIR" ".pi/agent/extensions" "read-only"
   link_host_path "$name" "$HOST_SESSIONS_DIR" ".pi/agent/sessions" "read-write"
   link_host_path "$name" "$HOST_MEMORY_DIR" ".pi/memory" "read-write"
+  [ -f "$HOST_KEYBINDINGS" ] && link_host_path "$name" "$HOST_KEYBINDINGS" ".pi/agent/keybindings.json" "read-only"
   configure_git_identity "$name"
   configure_offline_model "$name"
   sync_packages "$name"
+  warm_embedder_cache "$name"
 }
 
 cmd_init() {
@@ -267,6 +360,7 @@ cmd_sync() {
   name="$(sandbox_name "$PWD")"
   sandbox_exists "$name" || die "no sandbox for this directory yet — run 'safe-pi' first"
   sync_packages "$name"
+  warm_embedder_cache "$name"
 }
 
 cmd_rm() {
@@ -295,12 +389,17 @@ Usage:
 
 Config lives at $CONFIG_FILE.
 Each project directory gets its own sandbox; state persists until 'safe-pi rm'.
-Global pi extensions in $HOST_EXT_DIR are shared read-only with every sandbox.
-Global pi sessions in $HOST_SESSIONS_DIR are shared read-write with every sandbox
+Pi configuration is tracked in this repo under dotpi/ and symlinked to ~/.pi.
+Extensions in $HOST_EXT_DIR are shared read-only with every sandbox.
+Sessions in $HOST_SESSIONS_DIR are shared read-write with every sandbox
 (keyed by encoded cwd/repo path).
-Global pi memory in $HOST_MEMORY_DIR is shared read-write with every sandbox.
-Global pi packages listed in ~/.pi/agent/settings.json are installed into each
-sandbox at creation; run 'safe-pi sync' after changing them on the host.
+Keybindings in $HOST_KEYBINDINGS are shared read-only with every sandbox.
+Memory in $HOST_MEMORY_DIR is shared read-write with every sandbox.
+Packages listed in $HOST_SETTINGS are installed into each sandbox at creation;
+run 'safe-pi sync' after changing them.
+
+When run from inside this repo those three directories are already part of the
+workspace mount, so they are not mounted a second time.
 EOF
 }
 
