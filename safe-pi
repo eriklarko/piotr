@@ -273,7 +273,6 @@ extra_mounts() {
     return 0
   fi
   printf '%s\n' "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
-  [ -f "$HOST_KEYBINDINGS" ] && printf '%s\n' "$HOST_KEYBINDINGS:ro"
 }
 
 create_sandbox() {
@@ -295,7 +294,7 @@ create_sandbox() {
   link_host_path "$name" "$HOST_EXT_DIR" ".pi/agent/extensions" "read-only"
   link_host_path "$name" "$HOST_SESSIONS_DIR" ".pi/agent/sessions" "read-write"
   link_host_path "$name" "$HOST_MEMORY_DIR" ".pi/memory" "read-write"
-  [ -f "$HOST_KEYBINDINGS" ] && link_host_path "$name" "$HOST_KEYBINDINGS" ".pi/agent/keybindings.json" "read-only"
+  [ -f "$HOST_KEYBINDINGS" ] && sbx cp "$HOST_KEYBINDINGS" "$name:/home/agent/.pi/agent/keybindings.json"
   configure_git_identity "$name"
   configure_offline_model "$name"
   sync_packages "$name"
