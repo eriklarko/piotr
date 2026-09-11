@@ -1,0 +1,5 @@
+# pi ships "*" here to keep its install out of git. We need package.json tracked
+# so `make bootstrap` can reproduce the package set on a new machine.
+*
+!.gitignore
+!package.json

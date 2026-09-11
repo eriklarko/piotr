@@ -1,0 +1,17 @@
+# safe-pi configuration — tracked template.
+# `make bootstrap` copies this to ~/.pi-sbx/config if that file does not exist.
+# Never put the GitHub token here; this file is in git.
+
+# Git identity used for commits made inside the sandbox.
+GIT_NAME=Erik Larkö
+GIT_EMAIL=erik@gptzero.me
+
+# Leave empty to reuse the token from `gh auth token` (recommended).
+GITHUB_TOKEN=
+
+# Offline / local model server.
+# Leave OFFLINE_PORT empty to use a cloud provider instead.
+# The server must listen on the host; the sandbox reaches it through
+# host.docker.internal, never 127.0.0.1.
+OFFLINE_PORT=
+OFFLINE_MODEL=

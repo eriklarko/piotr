@@ -7,3 +7,13 @@ dev
 workspace
 .env
 github_token.txt
+
+# machine-local / generated / sensitive
+config/agent/auth.json
+config/agent/trust.json
+config/agent/models-store.json
+config/agent/sessions/
+config/memory/
+installed-extensions/node_modules/
+installed-extensions/package-lock.json
+.DS_Store
