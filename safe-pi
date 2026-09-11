@@ -17,27 +17,30 @@ resolve_self() {
 }
 
 REPO_DIR="$(resolve_self "$0")"
-KIT_DIR="$REPO_DIR/kit"
+# The four repo roots that ~/.pi is assembled from (see the Makefile's
+# install target). Sandboxes read these repo paths directly instead of going
+# through the ~/.pi symlinks, so sbx never has to resolve one when setting up
+# mounts.
+EXT_DIR="$REPO_DIR/extensions"
+CONFIG_DIR="$REPO_DIR/config"
+SANDBOX_DIR="$REPO_DIR/docker-sandbox"
 
-# Pi configuration is tracked in this repo under dotpi/ and symlinked to ~/.pi.
-# Sandboxes read the repo paths directly instead of going through that symlink,
-# so sbx never has to resolve it when setting up mounts.
-DOTPI_DIR="$REPO_DIR/dotpi"
-HOST_SETTINGS="$DOTPI_DIR/agent/settings.json"
+KIT_DIR="$SANDBOX_DIR"
+HOST_SETTINGS="$CONFIG_DIR/agent/settings.json"
 
 # Global pi extensions, shared read-only with every sandbox.
 # pi auto-discovers ~/.pi/agent/extensions/*.ts and */index.ts.
-HOST_EXT_DIR="$DOTPI_DIR/agent/extensions"
+HOST_EXT_DIR="$EXT_DIR"
 
 # Pi sessions, shared read-write with every sandbox.
 # pi stores sessions under ~/.pi/agent/sessions/--<encoded-cwd>--/.
-HOST_SESSIONS_DIR="$DOTPI_DIR/agent/sessions"
+HOST_SESSIONS_DIR="$CONFIG_DIR/agent/sessions"
 
 # Pi keybindings, shared read-only with every sandbox.
-HOST_KEYBINDINGS="$DOTPI_DIR/agent/keybindings.json"
+HOST_KEYBINDINGS="$CONFIG_DIR/agent/keybindings.json"
 
 # Agent memory (e.g. @samfp/pi-memory), shared read-write.
-HOST_MEMORY_DIR="$DOTPI_DIR/memory"
+HOST_MEMORY_DIR="$CONFIG_DIR/memory"
 
 # Domains needed to download the embedder model. These are allowed only
 # transiently, scoped to a single sandbox, while warming the cache at creation
@@ -268,8 +271,8 @@ is_ancestor_or_same() {
 # those paths, and since every mount lands at its host absolute path, the in-VM
 # symlinks created by link_host_path are correct either way.
 extra_mounts() {
-  if is_ancestor_or_same "$PWD" "$DOTPI_DIR"; then
-    info "dotpi is inside this workspace; skipping the nested extension/session/memory mounts"
+  if is_ancestor_or_same "$PWD" "$REPO_DIR"; then
+    info "this repo is inside the workspace; skipping the nested extension/session/memory mounts"
     return 0
   fi
   printf '%s\n' "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
@@ -388,7 +391,8 @@ Usage:
 
 Config lives at $CONFIG_FILE.
 Each project directory gets its own sandbox; state persists until 'safe-pi rm'.
-Pi configuration is tracked in this repo under dotpi/ and symlinked to ~/.pi.
+Pi configuration is tracked in this repo under extensions/, installed-extensions/
+and config/, which ~/.pi links to child by child.
 Extensions in $HOST_EXT_DIR are shared read-only with every sandbox.
 Sessions in $HOST_SESSIONS_DIR are shared read-write with every sandbox
 (keyed by encoded cwd/repo path).

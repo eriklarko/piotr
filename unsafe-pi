@@ -19,7 +19,7 @@ resolve_self() {
 }
 
 REPO_DIR="$(resolve_self "$0")"
-VERSION_FILE="$REPO_DIR/kit/pi-version"
+VERSION_FILE="$REPO_DIR/docker-sandbox/pi-version"
 
 die() { echo "unsafe-pi: $*" >&2; exit 1; }
 info() { echo "unsafe-pi: $*" >&2; }
@@ -33,7 +33,7 @@ Usage:
   unsafe-pi <args...>       pass args/flags through to pi
   unsafe-pi --help          show this message
 
-Installs ${PI_PACKAGE}@\$(cat kit/pi-version) under ${HOST_PI_PREFIX}
+Installs ${PI_PACKAGE}@\$(cat docker-sandbox/pi-version) under ${HOST_PI_PREFIX}
 and execs that binary by absolute path. pi is never added to PATH.
 
 This has full access to your host filesystem and network. Prefer safe-pi
