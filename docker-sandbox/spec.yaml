@@ -8,7 +8,7 @@ sandbox:
   image: "docker/sandbox-templates:shell"
   aiFilename: AGENTS.md
   entrypoint:
-    # Private-prefix install (not on PATH). Keep in sync with kit/pi-version.
+    # Private-prefix install (not on PATH).
     run: [/usr/lib/pi-kit/pi/node_modules/.bin/pi]
 
 environment:
@@ -63,7 +63,7 @@ commands:
     - description: Install pi
       command: |
         set -eu
-        # Version pin must match kit/pi-version (enforced by `make validate`).
+        # Version pin must match docker-sandbox/pi-version (enforced by `make validate`).
         npm install --prefix /usr/lib/pi-kit/pi @earendil-works/pi-coding-agent@0.85.1
 
     - description: Install GitHub CLI

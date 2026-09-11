@@ -10,7 +10,7 @@
  *  - git_add, git_commit, git_push   (mutating)
  *  - make                            (runs a target's Makefile recipe)
  *
- * Design principles (see plans/scoped-tools.md):
+ * Design principles (see scoped-tools.md in ~/.pi/plans):
  *  - No shell. Every tool builds a fixed argv and calls pi.exec(binary, argv).
  *    The model fills typed parameter fields; it never supplies raw flag strings.
  *  - No `args: string[]` passthrough. git is a shell delivery mechanism
