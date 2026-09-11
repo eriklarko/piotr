@@ -87,17 +87,18 @@ under `~/.pi-sbx/host-pi/` and is never installed globally.
 
 ### Pi version pin
 
-The package version is pinned in
-[docker-sandbox/pi-version](docker-sandbox/pi-version) and baked into the
-sandbox install in [docker-sandbox/spec.yaml](docker-sandbox/spec.yaml). Bump
-it with:
+The package version is pinned in the install step of
+[docker-sandbox/spec.yaml](docker-sandbox/spec.yaml). That file is a static
+manifest and has to carry the version literally, which makes it the single
+source of truth: the Makefile and `unsafe-pi` read the pin back out of it
+rather than keeping a second copy. Bump it with:
 
 ```bash
 make upgrade-pi              # latest from npm
 make upgrade-pi VERSION=0.85.0
 ```
 
-That updates the pin files and refreshes the host install under
+That rewrites the pin and refreshes the host install under
 `~/.pi-sbx/host-pi/`. Existing sandboxes keep their old binary until you
 recreate them (`safe-pi rm` then `safe-pi`).
 
@@ -133,7 +134,7 @@ config/
     sessions/            ignored   session history
   memory/                ignored   pi-memory SQLite DB
   sbx-config.template    tracked   non-secret ~/.pi-sbx/config defaults
-docker-sandbox/          tracked   the sbx kit — spec.yaml and the pi version pin
+docker-sandbox/          tracked   the sbx kit — spec.yaml, including the pi version pin
 ```
 
 `extensions/` and `installed-extensions/` each have their own README covering
@@ -286,9 +287,8 @@ If you change these values after the sandbox exists, apply them with
 ## The kit
 
 [docker-sandbox/spec.yaml](docker-sandbox/spec.yaml) defines pi as a custom
-sandbox agent: base image, install steps, network allowlist, and the agent
-context. The pi package version must match
-[docker-sandbox/pi-version](docker-sandbox/pi-version). Validate with:
+sandbox agent: base image, install steps, network allowlist, the agent
+context, and the pinned pi version. Validate with:
 
 ```bash
 make validate

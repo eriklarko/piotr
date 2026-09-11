@@ -11,7 +11,9 @@ SANDBOX_DIR := $(CURDIR)/docker-sandbox
 SBX_CONFIG := $(HOME)/.pi-sbx/config
 PI_PACKAGE := @earendil-works/pi-coding-agent
 HOST_PI_PREFIX := $(HOME)/.pi-sbx/host-pi
-PI_VERSION := $(shell tr -d '[:space:]' < $(SANDBOX_DIR)/pi-version)
+# spec.yaml is a static manifest, so it has to carry the pin literally.
+# That makes it the single source of truth; everything else reads it back out.
+PI_VERSION := $(shell sed -nE 's|.*$(PI_PACKAGE)@([0-9][^[:space:]]*).*|\1|p' $(SANDBOX_DIR)/spec.yaml | head -1)
 
 # Everything install/uninstall links into ~/.pi, as "<path under ~/.pi>:<repo target>".
 PI_LINKS := \
@@ -30,9 +32,9 @@ help:
 	@echo "bootstrap    one-command setup on a new machine (install + links + packages)"
 	@echo "install      symlink safe-pi/unsafe-pi into $(BIN_DIR) and assemble ~/.pi from this repo"
 	@echo "uninstall    remove the safe-pi, unsafe-pi and ~/.pi symlinks"
-	@echo "validate     check docker-sandbox/spec.yaml against docker-sandbox/pi-version"
+	@echo "validate     check the sandbox kit spec and that the pi pin is readable"
 	@echo "test-extensions  run the pure-logic tests for the agent extensions"
-	@echo "upgrade-pi   bump docker-sandbox/pi-version (VERSION=x.y.z or latest), refresh host prefix"
+	@echo "upgrade-pi   bump the pi pin in docker-sandbox/spec.yaml (VERSION=x.y.z or latest)"
 
 # Single entry point for a new machine. Idempotent.
 bootstrap: install
@@ -101,8 +103,10 @@ uninstall:
 	fi
 
 validate:
-	@grep -q "$(PI_PACKAGE)@$(PI_VERSION)" $(SANDBOX_DIR)/spec.yaml \
-		|| (echo "validate: docker-sandbox/spec.yaml pin does not match docker-sandbox/pi-version ($(PI_VERSION))" >&2; exit 1)
+	@# An unreadable pin is silent otherwise: PI_VERSION just comes back empty.
+	@[ -n "$(PI_VERSION)" ] \
+		|| (echo "validate: no $(PI_PACKAGE) version pin found in $(SANDBOX_DIR)/spec.yaml" >&2; exit 1)
+	@echo "pi pinned at $(PI_VERSION)"
 	sbx kit validate $(SANDBOX_DIR)
 
 # Pure-logic regression tests for the extensions under $(EXT_DIR). The
@@ -122,7 +126,6 @@ upgrade-pi:
 	if [ -z "$$new_version" ]; then new_version=$$(npm view $(PI_PACKAGE) version); fi; \
 	echo "$$new_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.+-].*)?$$' \
 		|| (echo "upgrade-pi: invalid version '$$new_version'" >&2; exit 1); \
-	printf '%s\n' "$$new_version" > $(SANDBOX_DIR)/pi-version; \
 	tmp=$$(mktemp); \
 	sed -E "s|$(PI_PACKAGE)@[0-9][^[:space:]]*|$(PI_PACKAGE)@$$new_version|g" $(SANDBOX_DIR)/spec.yaml > "$$tmp"; \
 	mv "$$tmp" $(SANDBOX_DIR)/spec.yaml; \

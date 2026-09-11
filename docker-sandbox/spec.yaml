@@ -63,7 +63,8 @@ commands:
     - description: Install pi
       command: |
         set -eu
-        # Version pin must match docker-sandbox/pi-version (enforced by `make validate`).
+        # Single source of truth for the pi version: `make upgrade-pi` rewrites
+        # this line, and the Makefile and unsafe-pi read it back out.
         npm install --prefix /usr/lib/pi-kit/pi @earendil-works/pi-coding-agent@0.85.1
 
     - description: Install GitHub CLI
