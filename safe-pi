@@ -17,30 +17,31 @@ resolve_self() {
 }
 
 REPO_DIR="$(resolve_self "$0")"
-# The four repo roots that ~/.pi is assembled from (see the Makefile's
-# install target). Sandboxes read these repo paths directly instead of going
-# through the ~/.pi symlinks, so sbx never has to resolve one when setting up
-# mounts.
+# Tracked config comes from this repo; machine-local state comes from ~/.pi,
+# where pi writes it directly. Repo paths are read at their real location
+# rather than through the ~/.pi symlinks, so sbx never has to resolve one when
+# setting up mounts.
 EXT_DIR="$REPO_DIR/extensions"
-CONFIG_DIR="$REPO_DIR/config"
+REPO_CONFIG_DIR="$REPO_DIR/config"
 SANDBOX_DIR="$REPO_DIR/docker-sandbox"
+PI_DIR="$HOME/.pi"
 
 KIT_DIR="$SANDBOX_DIR"
-HOST_SETTINGS="$CONFIG_DIR/agent/settings.json"
+HOST_SETTINGS="$REPO_CONFIG_DIR/settings.json"
 
 # Global pi extensions, shared read-only with every sandbox.
 # pi auto-discovers ~/.pi/agent/extensions/*.ts and */index.ts.
 HOST_EXT_DIR="$EXT_DIR"
 
+# Pi keybindings, shared read-only with every sandbox.
+HOST_KEYBINDINGS="$REPO_CONFIG_DIR/keybindings.json"
+
 # Pi sessions, shared read-write with every sandbox.
 # pi stores sessions under ~/.pi/agent/sessions/--<encoded-cwd>--/.
-HOST_SESSIONS_DIR="$CONFIG_DIR/agent/sessions"
-
-# Pi keybindings, shared read-only with every sandbox.
-HOST_KEYBINDINGS="$CONFIG_DIR/agent/keybindings.json"
+HOST_SESSIONS_DIR="$PI_DIR/agent/sessions"
 
 # Agent memory (e.g. @samfp/pi-memory), shared read-write.
-HOST_MEMORY_DIR="$CONFIG_DIR/memory"
+HOST_MEMORY_DIR="$PI_DIR/memory"
 
 # Domains needed to download the embedder model. These are allowed only
 # transiently, scoped to a single sandbox, while warming the cache at creation
@@ -264,18 +265,22 @@ is_ancestor_or_same() {
   return 1
 }
 
-# The shared pi directories now live inside this repo, so running safe-pi from
-# the repo (or any ancestor of it) would hand sbx a workspace mount plus three
-# mounts nested underneath it. Overlapping mounts are not something sbx promises
-# to handle, so drop the redundant ones: the workspace mount already exposes
-# those paths, and since every mount lands at its host absolute path, the in-VM
-# symlinks created by link_host_path are correct either way.
+# Running safe-pi from a directory that contains one of these paths (this repo,
+# or $HOME) would hand sbx a workspace mount plus a mount nested underneath it.
+# Overlapping mounts are not something sbx promises to handle, so drop the
+# redundant ones: the workspace mount already exposes those paths, and since
+# every mount lands at its host absolute path, the in-VM symlinks created by
+# link_host_path are correct either way.
 extra_mounts() {
-  if is_ancestor_or_same "$PWD" "$REPO_DIR"; then
-    info "this repo is inside the workspace; skipping the nested extension/session/memory mounts"
-    return 0
-  fi
-  printf '%s\n' "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
+  local spec path
+  for spec in "$HOST_EXT_DIR:ro" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"; do
+    path="${spec%:ro}"
+    if is_ancestor_or_same "$PWD" "$path"; then
+      info "$path is inside this workspace; not mounting it a second time"
+      continue
+    fi
+    printf '%s\n' "$spec"
+  done
 }
 
 create_sandbox() {
@@ -391,8 +396,9 @@ Usage:
 
 Config lives at $CONFIG_FILE.
 Each project directory gets its own sandbox; state persists until 'safe-pi rm'.
-Pi configuration is tracked in this repo under extensions/, installed-extensions/
-and config/, which ~/.pi links to child by child.
+Pi configuration is tracked in this repo under extensions/,
+installed-extensions/, skills/ and config/, which ~/.pi links to child by
+child. Credentials, sessions and memory are not tracked; they live in ~/.pi.
 Extensions in $HOST_EXT_DIR are shared read-only with every sandbox.
 Sessions in $HOST_SESSIONS_DIR are shared read-write with every sandbox
 (keyed by encoded cwd/repo path).
@@ -401,8 +407,8 @@ Memory in $HOST_MEMORY_DIR is shared read-write with every sandbox.
 Packages listed in $HOST_SETTINGS are installed into each sandbox at creation;
 run 'safe-pi sync' after changing them.
 
-When run from inside this repo those three directories are already part of the
-workspace mount, so they are not mounted a second time.
+Any of those paths that already sits inside the workspace is not mounted a
+second time, since the workspace mount covers it.
 EOF
 }
 

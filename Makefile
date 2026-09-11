@@ -2,10 +2,11 @@
 
 BIN_DIR := $(HOME)/.local/bin
 PI_LINK := $(HOME)/.pi
-# The four repo roots that together make up ~/.pi. Read straight from the repo,
-# never through the ~/.pi symlinks.
+# The repo roots linked into ~/.pi. Read straight from the repo, never through
+# the ~/.pi symlinks.
 EXT_DIR := $(CURDIR)/extensions
 NPM_DIR := $(CURDIR)/installed-extensions
+SKILLS_DIR := $(CURDIR)/skills
 CONFIG_DIR := $(CURDIR)/config
 SANDBOX_DIR := $(CURDIR)/docker-sandbox
 SBX_CONFIG := $(HOME)/.pi-sbx/config
@@ -15,18 +16,16 @@ HOST_PI_PREFIX := $(HOME)/.pi-sbx/host-pi
 # That makes it the single source of truth; everything else reads it back out.
 PI_VERSION := $(shell sed -nE 's|.*$(PI_PACKAGE)@([0-9][^[:space:]]*).*|\1|p' $(SANDBOX_DIR)/spec.yaml | head -1)
 
-# Everything install/uninstall links into ~/.pi, as "<path under ~/.pi>:<repo target>".
+# Everything install/uninstall links into ~/.pi, as "<path under ~/.pi>:<repo
+# target>". Only tracked things appear here. pi's own machine-local state
+# (auth.json, trust.json, models-store.json, agent/sessions/, memory/) is real
+# and lives directly in ~/.pi, so it is never linked and never touched.
 PI_LINKS := \
 	agent/extensions:$(EXT_DIR) \
 	agent/npm:$(NPM_DIR) \
-	agent/skills:$(CONFIG_DIR)/agent/skills \
-	agent/sessions:$(CONFIG_DIR)/agent/sessions \
-	agent/settings.json:$(CONFIG_DIR)/agent/settings.json \
-	agent/keybindings.json:$(CONFIG_DIR)/agent/keybindings.json \
-	agent/auth.json:$(CONFIG_DIR)/agent/auth.json \
-	agent/trust.json:$(CONFIG_DIR)/agent/trust.json \
-	agent/models-store.json:$(CONFIG_DIR)/agent/models-store.json \
-	memory:$(CONFIG_DIR)/memory
+	agent/skills:$(SKILLS_DIR) \
+	agent/settings.json:$(CONFIG_DIR)/settings.json \
+	agent/keybindings.json:$(CONFIG_DIR)/keybindings.json
 
 help:
 	@echo "bootstrap    one-command setup on a new machine (install + links + packages)"
@@ -52,7 +51,7 @@ bootstrap: install
 	@echo "bootstrap done. Remaining manual steps:"
 	@echo "  1. sbx login                       (Docker Sandboxes)"
 	@echo "  2. gh auth login                   (token is read via 'gh auth token')"
-	@echo "  3. unsafe-pi  then /login          (provider credentials -> config/agent/auth.json)"
+	@echo "  3. unsafe-pi  then /login          (provider credentials -> ~/.pi/agent/auth.json)"
 
 install:
 	@mkdir -p $(BIN_DIR)
@@ -91,8 +90,8 @@ install:
 uninstall:
 	@rm -f $(BIN_DIR)/safe-pi $(BIN_DIR)/unsafe-pi
 	@echo "removed $(BIN_DIR)/safe-pi and $(BIN_DIR)/unsafe-pi"
-	@# Only ever remove symlinks we created. $(PI_LINK) itself stays: pi writes
-	@# its own host-local state in there (e.g. agent/git/) that is not ours.
+	@# Only ever remove symlinks we created. $(PI_LINK) itself stays: the
+	@# credentials, sessions and memory in there are real files, not ours.
 	@if [ -L $(PI_LINK) ]; then \
 		rm -f $(PI_LINK); echo "removed the legacy $(PI_LINK) symlink (repo untouched)"; \
 	else \

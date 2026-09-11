@@ -2,16 +2,4 @@
 dev
 experiments
 
-# Machine-local, generated, or sensitive. These are real state that
-# `make install` links into ~/.pi, so they have to survive a clone
-# without ever being tracked.
-config/agent/auth.json
-config/agent/trust.json
-config/agent/models-store.json
-config/agent/sessions/
-config/memory/
-
-# installed-extensions/ has its own .gitignore: everything there is ignored
-# except the manifest and docs.
-
 .DS_Store
