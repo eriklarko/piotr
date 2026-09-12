@@ -5,7 +5,10 @@ displayName: Pi
 description: The pi coding agent, running in an isolated Docker Sandbox.
 
 sandbox:
-  image: "docker/sandbox-templates:shell"
+  # Built from the Dockerfile next to this file. `make image` builds it and
+  # loads it into the sbx image store; `make validate` checks that this tag
+  # still matches the pi version pinned in the Dockerfile.
+  image: "pi-sandbox:0.85.1"
   aiFilename: AGENTS.md
   entrypoint:
     # Private-prefix install (not on PATH).
@@ -21,16 +24,16 @@ environment:
 
 network:
   # Domain-level allowlist. If pi or a tool gets blocked, find the domain in
-  # `sbx policy log` and add it here.
+  # `sbx policy log` and add it here. Toolchain downloads happen at image build
+  # time on the host, so they do not need an entry.
   allowedDomains:
-    # Toolchain installation
-    - "nodejs.org:443"
-    - "registry.npmjs.org:443"
     # GitHub API, git over HTTPS, and release downloads
     - "github.com:443"
     - "api.github.com:443"
     # Model catalog refresh
     - "pi.dev:443"
+    # npm, for installing packages into a workspace
+    - "registry.npmjs.org:443"
     #
     #
     # GitHub Copilot models
@@ -41,79 +44,6 @@ network:
     # - "api.anthropic.com:443"
     # - "api.openai.com:443"
     # - "generativelanguage.googleapis.com:443"
-
-commands:
-  install:
-    - description: Install Node.js 22
-      command: |
-        set -eu
-        if command -v node >/dev/null 2>&1 && [ "$(node -e 'process.stdout.write(String(process.versions.node.split(".")[0]))')" -ge 22 ]; then
-          exit 0
-        fi
-        NODE_VERSION=v22.22.0
-        case "$(uname -m)" in
-          x86_64) NODE_ARCH=linux-x64 ;;
-          aarch64|arm64) NODE_ARCH=linux-arm64 ;;
-          *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-        esac
-        curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-${NODE_ARCH}.tar.xz" -o /tmp/node.tar.xz
-        tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
-        rm /tmp/node.tar.xz
-
-    - description: Install pi
-      command: |
-        set -eu
-        # Single source of truth for the pi version: `make upgrade-pi` rewrites
-        # this line, and the Makefile and unsafe-pi read it back out.
-        npm install --prefix /usr/lib/pi-kit/pi @earendil-works/pi-coding-agent@0.85.1
-
-    - description: Install GitHub CLI
-      command: |
-        set -eu
-        GH_VERSION=2.83.0
-        case "$(uname -m)" in
-          x86_64) GH_ARCH=amd64 ;;
-          aarch64|arm64) GH_ARCH=arm64 ;;
-          *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-        esac
-        curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" -o /tmp/gh.tar.gz
-        install -d /usr/lib/pi-kit
-        tar -xzf /tmp/gh.tar.gz -C /tmp
-        install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/lib/pi-kit/gh-real
-        rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}"
-
-    - description: Install gh-guard wrapper as the only gh on PATH
-      command: |
-        set -eu
-        cat > /usr/local/bin/gh <<'GUARD'
-        #!/usr/bin/env bash
-        # gh-guard — blocks gh subcommands that could grant an agent persistent
-        # access to the GitHub account itself, rather than to a repository.
-        #
-        # This is a guardrail, not a security boundary: the agent has sudo inside
-        # the VM and the host proxy authenticates any request to api.github.com,
-        # however it is made. Scope your token accordingly.
-        set -euo pipefail
-
-        if [ "${PARANOID_MODE:-true}" = "true" ]; then
-          case "${1:-}" in
-            auth|repo|secret|ssh-key|gpg-key)
-              echo "[SYSTEM BLOCK] Paranoid mode is active. The agent is not authorized to execute 'gh $1'." >&2
-              exit 1
-              ;;
-          esac
-        fi
-
-        exec /usr/lib/pi-kit/gh-real "$@"
-        GUARD
-        chmod 0755 /usr/local/bin/gh
-
-    - description: Point git at gh for GitHub credentials
-      command: |
-        set -eu
-        mkdir -p /home/agent/.pi/agent
-        chown -R agent:agent /home/agent/.pi
-        su agent -c 'git config --global credential.https://github.com.helper "!/usr/local/bin/gh auth git-credential"'
 
 agentContext: |
   ## Sandbox environment

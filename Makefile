@@ -1,4 +1,4 @@
-.PHONY: bootstrap install uninstall validate upgrade-pi test-extensions help
+.PHONY: bootstrap install uninstall image validate upgrade-pi test-extensions help
 
 BIN_DIR := $(HOME)/.local/bin
 PI_LINK := $(HOME)/.pi
@@ -9,12 +9,19 @@ NPM_DIR := $(CURDIR)/installed-extensions
 SKILLS_DIR := $(CURDIR)/skills
 CONFIG_DIR := $(CURDIR)/config
 SANDBOX_DIR := $(CURDIR)/docker-sandbox
-SBX_CONFIG := $(HOME)/.pi-sbx/config
 PI_PACKAGE := @earendil-works/pi-coding-agent
-HOST_PI_PREFIX := $(HOME)/.pi-sbx/host-pi
-# spec.yaml is a static manifest, so it has to carry the pin literally.
-# That makes it the single source of truth; everything else reads it back out.
-PI_VERSION := $(shell sed -nE 's|.*$(PI_PACKAGE)@([0-9][^[:space:]]*).*|\1|p' $(SANDBOX_DIR)/spec.yaml | head -1)
+# The host-only pi install unsafe-pi execs. Machine-local, so it lives in
+# ~/.pi with the rest of pi's state.
+HOST_PI_PREFIX := $(HOME)/.pi/host-pi
+# The Dockerfile bakes pi into the sandbox image, so it carries the pin as an
+# ARG. That makes it the single source of truth; the Makefile, unsafe-pi and
+# the spec.yaml image tag all read it back out.
+DOCKERFILE := $(SANDBOX_DIR)/Dockerfile
+PI_VERSION := $(shell sed -nE 's|^ARG PI_VERSION=([0-9][^[:space:]]*).*|\1|p' $(DOCKERFILE) | head -1)
+# The sandbox image is tagged with the pi version it contains, so a stale
+# image can never masquerade as a current one.
+IMAGE_REPO := pi-sandbox
+IMAGE := $(IMAGE_REPO):$(PI_VERSION)
 
 # Everything install/uninstall links into ~/.pi, as "<path under ~/.pi>:<repo
 # target>". Only tracked things appear here. pi's own machine-local state
@@ -28,30 +35,34 @@ PI_LINKS := \
 	agent/keybindings.json:$(CONFIG_DIR)/keybindings.json
 
 help:
-	@echo "bootstrap    one-command setup on a new machine (install + links + packages)"
+	@echo "bootstrap    one-command setup on a new machine (install + links + packages + image)"
 	@echo "install      symlink safe-pi/unsafe-pi into $(BIN_DIR) and assemble ~/.pi from this repo"
 	@echo "uninstall    remove the safe-pi, unsafe-pi and ~/.pi symlinks"
-	@echo "validate     check the sandbox kit spec and that the pi pin is readable"
+	@echo "image        rebuild $(IMAGE) and load it into the sbx image store"
+	@echo "validate     check the kit spec, the pi pin and that the image exists"
 	@echo "test-extensions  run the pure-logic tests for the agent extensions"
-	@echo "upgrade-pi   bump the pi pin in docker-sandbox/spec.yaml (VERSION=x.y.z or latest)"
+	@echo "upgrade-pi   bump the pi pin in docker-sandbox/Dockerfile (VERSION=x.y.z or latest)"
 
-# Single entry point for a new machine. Idempotent.
+# Single entry point for a new machine. Idempotent. Includes the sandbox image:
+# nothing runs without it, and skipping it surfaces much later as an opaque
+# "403 Forbidden: pull failed" from sbx.
 bootstrap: install
-	@if [ ! -f $(SBX_CONFIG) ]; then \
-		mkdir -p $(dir $(SBX_CONFIG)); chmod 700 $(dir $(SBX_CONFIG)); \
-		cp $(CONFIG_DIR)/sbx-config.template $(SBX_CONFIG); \
-		chmod 600 $(SBX_CONFIG); \
-		echo "seeded $(SBX_CONFIG) from config/sbx-config.template"; \
-	else \
-		echo "$(SBX_CONFIG) already exists — left alone"; \
-	fi
 	@echo "installing pi packages into $(NPM_DIR)"
 	@npm install --prefix $(NPM_DIR) --silent
 	@echo
+	@# Last, because it is the only step needing Docker up and sbx signed in.
+	@# Everything above has already landed if this fails, and re-running is safe.
+	@$(MAKE) --no-print-directory image || { \
+		echo; \
+		echo "bootstrap: could not build $(IMAGE)."; \
+		echo "If you are not signed in to Docker Sandboxes yet:"; \
+		echo "  sbx login && make bootstrap"; \
+		exit 1; \
+	}
+	@echo
 	@echo "bootstrap done. Remaining manual steps:"
-	@echo "  1. sbx login                       (Docker Sandboxes)"
-	@echo "  2. gh auth login                   (token is read via 'gh auth token')"
-	@echo "  3. unsafe-pi  then /login          (provider credentials -> ~/.pi/agent/auth.json)"
+	@echo "  1. gh auth login   (token is read via 'gh auth token')"
+	@echo "  2. safe-pi         (then /login inside it, and 'safe-pi login' to keep it)"
 
 install:
 	@mkdir -p $(BIN_DIR)
@@ -101,11 +112,35 @@ uninstall:
 		done; \
 	fi
 
+# Build the sandbox image and hand it to sbx. sbx keeps its own image store,
+# separate from the host Docker daemon, and only `sbx template load` writes to
+# it — so a plain `docker build` is not enough. The attestation manifests
+# buildx adds by default are not loadable, hence --provenance/--sbom=false.
+image:
+	@command -v docker >/dev/null 2>&1 || (echo "image: docker not found" >&2; exit 1)
+	@command -v sbx >/dev/null 2>&1 \
+		|| (echo "image: sbx not found — brew install docker/tap/sbx, then sbx login" >&2; exit 1)
+	@docker info >/dev/null 2>&1 || (echo "image: Docker is not running" >&2; exit 1)
+	docker build --provenance=false --sbom=false -t $(IMAGE) $(SANDBOX_DIR)
+	@# Chained with && and cleaned up via trap: semicolons here would let a
+	@# failed load be masked by the exit status of the rm that followed it.
+	@tar=$$(mktemp -t pi-sandbox).tar; \
+	trap 'rm -f "$$tar"' EXIT; \
+	docker save $(IMAGE) -o "$$tar" && sbx template load "$$tar"
+	@echo "image: loaded $(IMAGE); recreate sandboxes (safe-pi rm && safe-pi) to pick it up"
+
 validate:
 	@# An unreadable pin is silent otherwise: PI_VERSION just comes back empty.
 	@[ -n "$(PI_VERSION)" ] \
-		|| (echo "validate: no $(PI_PACKAGE) version pin found in $(SANDBOX_DIR)/spec.yaml" >&2; exit 1)
+		|| (echo "validate: no ARG PI_VERSION pin found in $(DOCKERFILE)" >&2; exit 1)
 	@echo "pi pinned at $(PI_VERSION)"
+	@# The spec names the image by tag, so the two can drift. A mismatch means
+	@# sandboxes would boot an image built for a different pi version.
+	@grep -q '^  image: "$(IMAGE)"$$' $(SANDBOX_DIR)/spec.yaml \
+		|| (echo "validate: spec.yaml image does not match $(IMAGE) — run 'make image'" >&2; exit 1)
+	@sbx template ls | grep -q '$(IMAGE_REPO) *$(PI_VERSION)' \
+		|| (echo "validate: $(IMAGE) is not in the sbx image store — run 'make image'" >&2; exit 1)
+	@echo "sandbox image $(IMAGE) present"
 	sbx kit validate $(SANDBOX_DIR)
 
 # Pure-logic regression tests for the extensions under $(EXT_DIR). The
@@ -115,8 +150,9 @@ test-extensions:
 	node --experimental-strip-types $(EXT_DIR)/mode-controller/gate-logic.test.mjs
 	node $(EXT_DIR)/scoped-tools/gate-logic.test.mjs
 
-# Bump the pin and refresh the host-only install under ~/.pi-sbx/host-pi.
-# Sandboxes pick up the new pin on recreate (safe-pi rm && safe-pi).
+# Bump the pin, refresh the host-only install under $(HOST_PI_PREFIX), and
+# rebuild the sandbox image. Sandboxes pick up the new image on recreate
+# (safe-pi rm && safe-pi).
 # Usage: make upgrade-pi          # latest from npm
 #        make upgrade-pi VERSION=0.85.0
 upgrade-pi:
@@ -126,10 +162,14 @@ upgrade-pi:
 	echo "$$new_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.+-].*)?$$' \
 		|| (echo "upgrade-pi: invalid version '$$new_version'" >&2; exit 1); \
 	tmp=$$(mktemp); \
-	sed -E "s|$(PI_PACKAGE)@[0-9][^[:space:]]*|$(PI_PACKAGE)@$$new_version|g" $(SANDBOX_DIR)/spec.yaml > "$$tmp"; \
+	sed -E "s|^ARG PI_VERSION=.*|ARG PI_VERSION=$$new_version|" $(DOCKERFILE) > "$$tmp"; \
+	mv "$$tmp" $(DOCKERFILE); \
+	tmp=$$(mktemp); \
+	sed -E "s|^  image: \"$(IMAGE_REPO):.*\"$$|  image: \"$(IMAGE_REPO):$$new_version\"|" $(SANDBOX_DIR)/spec.yaml > "$$tmp"; \
 	mv "$$tmp" $(SANDBOX_DIR)/spec.yaml; \
 	mkdir -p $(HOST_PI_PREFIX); \
 	npm install --prefix $(HOST_PI_PREFIX) "$(PI_PACKAGE)@$$new_version"; \
 	echo "upgrade-pi: pinned $(PI_PACKAGE)@$$new_version"; \
-	echo "upgrade-pi: host install refreshed at $(HOST_PI_PREFIX)"; \
-	echo "upgrade-pi: recreate sandboxes (safe-pi rm && safe-pi) to pick up the new binary"
+	echo "upgrade-pi: host install refreshed at $(HOST_PI_PREFIX)"
+	@# The pin moved, so $(IMAGE) now expands to the new version.
+	@$(MAKE) --no-print-directory image

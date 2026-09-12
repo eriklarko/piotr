@@ -5,7 +5,7 @@
 set -euo pipefail
 
 PI_PACKAGE="@earendil-works/pi-coding-agent"
-HOST_PI_PREFIX="${HOME}/.pi-sbx/host-pi"
+HOST_PI_PREFIX="${HOME}/.pi/host-pi"
 HOST_PI_BIN="${HOST_PI_PREFIX}/node_modules/.bin/pi"
 
 resolve_self() {
@@ -19,7 +19,7 @@ resolve_self() {
 }
 
 REPO_DIR="$(resolve_self "$0")"
-SPEC_FILE="$REPO_DIR/docker-sandbox/spec.yaml"
+PIN_FILE="$REPO_DIR/docker-sandbox/Dockerfile"
 
 die() { echo "unsafe-pi: $*" >&2; exit 1; }
 info() { echo "unsafe-pi: $*" >&2; }
@@ -35,7 +35,7 @@ Usage:
 
 Installs ${PI_PACKAGE}
 under ${HOST_PI_PREFIX}, at the version
-docker-sandbox/spec.yaml pins for sandboxes, then execs that binary by its
+docker-sandbox/Dockerfile pins for sandboxes, then execs that binary by its
 absolute path. pi is never added to PATH.
 
 This has full access to your host filesystem and network. Prefer safe-pi
@@ -49,11 +49,11 @@ case "${1:-}" in
   -h|--help) cmd_help; exit 0 ;;
 esac
 
-# spec.yaml carries the pin literally (a static manifest cannot read a sibling
-# file), so it is the single source of truth and this reads it back out.
-[ -f "$SPEC_FILE" ] || die "missing $SPEC_FILE"
-VERSION="$(sed -nE "s|.*${PI_PACKAGE}@([0-9][^[:space:]\"']*).*|\1|p" "$SPEC_FILE" | head -1)"
-[ -n "$VERSION" ] || die "no ${PI_PACKAGE} version pin found in $SPEC_FILE"
+# The Dockerfile bakes pi into the sandbox image and carries the pin as an
+# ARG, so it is the single source of truth and this reads it back out.
+[ -f "$PIN_FILE" ] || die "missing $PIN_FILE"
+VERSION="$(sed -nE 's|^ARG PI_VERSION=([0-9][^[:space:]]*).*|\1|p' "$PIN_FILE" | head -1)"
+[ -n "$VERSION" ] || die "no ARG PI_VERSION pin found in $PIN_FILE"
 
 command -v node >/dev/null 2>&1 || die "node not found — install Node.js on the host"
 command -v npm >/dev/null 2>&1 || die "npm not found — install Node.js on the host"

@@ -3,9 +3,6 @@
 # Install: `make install` (symlinks this file into ~/.local/bin/safe-pi).
 set -euo pipefail
 
-CONFIG_DIR="$HOME/.pi-sbx"
-CONFIG_FILE="$CONFIG_DIR/config"
-
 resolve_self() {
   local src="$1" dir
   while [ -L "$src" ]; do
@@ -43,6 +40,10 @@ HOST_SESSIONS_DIR="$PI_DIR/agent/sessions"
 # Agent memory (e.g. @samfp/pi-memory), shared read-write.
 HOST_MEMORY_DIR="$PI_DIR/memory"
 
+# Provider credentials. Copied into each sandbox at creation so a single
+# /login covers every sandbox, and saved back out by 'safe-pi login'.
+HOST_AUTH="$PI_DIR/agent/auth.json"
+
 # Domains needed to download the embedder model. These are allowed only
 # transiently, scoped to a single sandbox, while warming the cache at creation
 # time — they are never added to the kit allowlist, and the rule is always
@@ -62,6 +63,23 @@ need_sbx() {
   command -v sbx >/dev/null 2>&1 || die "sbx not found. Install it with 'brew install docker/tap/sbx' and run 'sbx login'."
 }
 
+# The kit boots an image built from docker-sandbox/Dockerfile. sbx keeps its own
+# image store, so if that image was never built sbx assumes it is a registry
+# reference and fails with an opaque "403 Forbidden: pull failed". Check for it
+# up front and name the fix instead.
+need_image() {
+  local image repo tag
+  image="$(sed -nE 's|^  image: "([^"]+)"$|\1|p' "$SANDBOX_DIR/spec.yaml" | head -1)"
+  [ -n "$image" ] || die "no sandbox image found in $SANDBOX_DIR/spec.yaml"
+  # A reference with a registry path (docker/foo:tag) is sbx's to pull.
+  case "$image" in */*) return 0 ;; esac
+  repo="${image%:*}"
+  tag="${image##*:}"
+  sbx template ls 2>/dev/null \
+    | awk -v r="$repo" -v t="$tag" 'NR>1 { n=$1; sub(/^.*\//, "", n); if (n==r && $2==t) found=1 } END { exit !found }' \
+    || die "sandbox image '$image' is not in the sbx image store. Build it with 'make image' in $REPO_DIR."
+}
+
 # Sandbox name derived from the workspace directory, so re-running from the
 # same project reconnects instead of creating a second VM.
 sandbox_name() {
@@ -76,27 +94,45 @@ sandbox_exists() {
   sbx ls 2>/dev/null | awk -v n="$1" 'NR>1 && $1==n { found=1 } END { exit !found }'
 }
 
-load_config() {
-  [ -f "$CONFIG_FILE" ] || die "no config at $CONFIG_FILE — run 'safe-pi init' first"
-  set -a
-  # shellcheck disable=SC1090
-  . "$CONFIG_FILE"
-  set +a
+# True when a global github service secret is already stored.
+github_secret_exists() {
+  sbx secret ls 2>/dev/null \
+    | awk 'NR>1 && $1=="(global)" && $3=="github" { found=1 } END { exit !found }'
 }
 
 # Store the GitHub token on the host. The real value never enters the VM; the
 # host proxy injects it into outbound GitHub requests.
+#
+# $1 = "force" to replace a secret that is already stored. Without it an
+# existing secret is left alone, because 'sbx secret set' asks to confirm an
+# overwrite and sandbox creation must never stop on a prompt.
 store_github_secret() {
-  local token="${GITHUB_TOKEN:-}"
+  local force="${1:-}" token="${GITHUB_TOKEN:-}"
   if [ -z "$token" ] && command -v gh >/dev/null 2>&1; then
     token="$(gh auth token 2>/dev/null || true)"
   fi
   if [ -z "$token" ]; then
-    info "no GitHub token found (set GITHUB_TOKEN in $CONFIG_FILE or run 'gh auth login') — gh inside the sandbox will not be authenticated"
+    info "no GitHub token found (run 'gh auth login', or set GITHUB_TOKEN) — gh inside the sandbox will not be authenticated"
     return 0
   fi
-  printf '%s' "$token" | sbx secret set -g github
-  info "stored GitHub token as a global sbx secret"
+  if github_secret_exists; then
+    if [ "$force" != "force" ]; then
+      info "GitHub sbx secret already stored — leaving it alone ('safe-pi login' replaces it)"
+      return 0
+    fi
+    # Remove first rather than confirming an overwrite: the token occupies
+    # stdin, so there is nothing left to answer the prompt with, and the
+    # --force flag on 'set' only applies to --token, which would expose the
+    # token in argv where 'ps' can read it.
+    sbx secret rm github -f >/dev/null 2>&1 || true
+  fi
+  # Report what actually happened: a cancelled or failed 'set' otherwise
+  # looks identical to a successful one.
+  if printf '%s' "$token" | sbx secret set github >/dev/null 2>&1; then
+    info "stored GitHub token as a global sbx secret"
+  else
+    info "could not store the GitHub token as an sbx secret — 'gh' in new sandboxes may be unauthenticated; try 'safe-pi login'"
+  fi
 }
 
 # Allow the sandbox to reach a model server on the host. The proxy rewrites
@@ -112,7 +148,7 @@ apply_offline_policy() {
 configure_offline_model() {
   local name="$1"
   [ -n "${OFFLINE_PORT:-}" ] || return 0
-  [ -n "${OFFLINE_MODEL:-}" ] || die "OFFLINE_PORT is set but OFFLINE_MODEL is empty in $CONFIG_FILE"
+  [ -n "${OFFLINE_MODEL:-}" ] || die "OFFLINE_PORT is set but OFFLINE_MODEL is empty"
 
   info "pointing pi at http://host.docker.internal:${OFFLINE_PORT}/v1 (model: ${OFFLINE_MODEL})"
   sbx exec -i "$name" bash -c 'mkdir -p ~/.pi/agent && cat > ~/.pi/agent/models.json' <<EOF
@@ -232,10 +268,72 @@ EOF
   info "embedder warm-up finished; network rule removed"
 }
 
-configure_git_identity() {
+# 'sbx cp' lands a file owned by the host uid (501 on macOS), not by the VM's
+# agent user. A mode-600 file copied in is then unreadable by pi, which shows
+# up as "not logged in" rather than as a permission error. Reset the owner
+# after every copy into ~/.pi.
+claim_for_agent() {
+  local name="$1" path="$2" mode="$3"
+  sbx exec "$name" sudo chown agent:agent "$path"
+  sbx exec "$name" sudo chmod "$mode" "$path"
+}
+
+# Provider credentials, copied in at creation so one '/login' serves every
+# sandbox. Unlike the GitHub token, the real value does enter the VM: pi talks
+# to the provider itself and there is no proxy injecting it on the way out.
+# True when the host has credentials worth copying. pi leaves an empty "{}"
+# behind after a logout or a bare start, and copying that in would report
+# success while leaving the sandbox unauthenticated.
+have_host_auth() {
+  [ -s "$HOST_AUTH" ] || return 1
+  [ "$(tr -d '[:space:]' < "$HOST_AUTH")" != "{}" ]
+}
+
+copy_auth_in() {
   local name="$1"
-  [ -n "${GIT_NAME:-}" ] && sbx exec "$name" git config --global user.name "$GIT_NAME"
-  [ -n "${GIT_EMAIL:-}" ] && sbx exec "$name" git config --global user.email "$GIT_EMAIL"
+  if ! have_host_auth; then
+    info "no provider credentials at $HOST_AUTH — run '/login' inside the sandbox, then 'safe-pi login' to keep them for the next one"
+    return 0
+  fi
+  sbx cp "$HOST_AUTH" "$name:/home/agent/.pi/agent/auth.json"
+  claim_for_agent "$name" /home/agent/.pi/agent/auth.json 600
+  info "copied provider credentials from $HOST_AUTH"
+}
+
+# Save a sandbox's provider credentials back to the host, so later sandboxes
+# inherit them. This is what makes '/login' a one-time step rather than one
+# per sandbox, and is why setup never has to run pi on the host.
+save_auth_out() {
+  local name="$1"
+  if ! sbx exec "$name" test -f /home/agent/.pi/agent/auth.json 2>/dev/null; then
+    info "sandbox '$name' has no provider credentials yet — run '/login' inside it first"
+    return 0
+  fi
+  mkdir -p "$(dirname "$HOST_AUTH")"
+  # Stage it, so an empty or truncated sandbox copy cannot replace good
+  # host credentials with junk.
+  local staged
+  staged="$(mktemp)"
+  sbx cp "$name:/home/agent/.pi/agent/auth.json" "$staged"
+  if [ ! -s "$staged" ] || [ "$(tr -d '[:space:]' < "$staged")" = "{}" ]; then
+    rm -f "$staged"
+    info "sandbox '$name' has no provider credentials to save (empty auth.json) — leaving $HOST_AUTH alone"
+    return 0
+  fi
+  mv "$staged" "$HOST_AUTH"
+  chmod 600 "$HOST_AUTH"
+  info "saved provider credentials to $HOST_AUTH"
+}
+
+# Git identity for commits made inside the sandbox. Defaults to the host's own
+# git config, which is where it already lives; GIT_NAME/GIT_EMAIL override it.
+configure_git_identity() {
+  local name="$1" git_name git_email
+  git_name="${GIT_NAME:-$(git config --get user.name || true)}"
+  git_email="${GIT_EMAIL:-$(git config --get user.email || true)}"
+  [ -n "$git_name" ] && sbx exec "$name" git config --global user.name "$git_name"
+  [ -n "$git_email" ] && sbx exec "$name" git config --global user.email "$git_email"
+  [ -n "$git_name" ] || info "no git identity on the host; sandbox commits will have none (set GIT_NAME/GIT_EMAIL or git config --global user.name)"
   # The signing key stays on the host and is unreachable from the VM.
   sbx exec "$name" git config --global commit.gpgsign false
   return 0
@@ -285,9 +383,14 @@ extra_mounts() {
 
 create_sandbox() {
   local name="$1" clone="$2"
+  need_image
   info "creating sandbox '$name' for $PWD"
   mkdir -p "$HOST_EXT_DIR" "$HOST_SESSIONS_DIR" "$HOST_MEMORY_DIR"
   apply_offline_policy
+  # Global secrets are injected at creation, so this has to happen before
+  # 'sbx create' — and here, rather than in a step the user must remember.
+  # Not forced: an already-stored secret is good enough to create with.
+  store_github_secret
 
   local mounts=()
   while IFS= read -r m; do
@@ -302,58 +405,30 @@ create_sandbox() {
   link_host_path "$name" "$HOST_EXT_DIR" ".pi/agent/extensions" "read-only"
   link_host_path "$name" "$HOST_SESSIONS_DIR" ".pi/agent/sessions" "read-write"
   link_host_path "$name" "$HOST_MEMORY_DIR" ".pi/memory" "read-write"
-  [ -f "$HOST_KEYBINDINGS" ] && sbx cp "$HOST_KEYBINDINGS" "$name:/home/agent/.pi/agent/keybindings.json"
+  if [ -f "$HOST_KEYBINDINGS" ]; then
+    sbx cp "$HOST_KEYBINDINGS" "$name:/home/agent/.pi/agent/keybindings.json"
+    claim_for_agent "$name" /home/agent/.pi/agent/keybindings.json 644
+  fi
+  copy_auth_in "$name"
   configure_git_identity "$name"
   configure_offline_model "$name"
   sync_packages "$name"
   warm_embedder_cache "$name"
 }
 
-cmd_init() {
-  need_sbx
-  mkdir -p "$CONFIG_DIR"
-  chmod 700 "$CONFIG_DIR"
-
-  if [ -f "$CONFIG_FILE" ]; then
-    info "$CONFIG_FILE already exists — leaving it alone"
-  else
-    cat > "$CONFIG_FILE" <<'EOF'
-# safe-pi configuration
-
-# Git identity used for commits made inside the sandbox.
-GIT_NAME=
-GIT_EMAIL=
-
-# GitHub token stored on the host and injected by the sandbox proxy.
-# Leave empty to reuse the token from `gh auth token`.
-GITHUB_TOKEN=
-
-# Offline / local model server.
-# Leave OFFLINE_PORT empty to use a cloud provider instead.
-# The server must listen on the host; the sandbox reaches it through
-# host.docker.internal, never 127.0.0.1.
-OFFLINE_PORT=
-OFFLINE_MODEL=
-EOF
-    chmod 600 "$CONFIG_FILE"
-    info "created $CONFIG_FILE — edit it to set your git identity and token"
-  fi
-
-  load_config
-  store_github_secret
-  echo
-  info "next: edit $CONFIG_FILE, then run 'safe-pi' from any project directory"
-}
-
 cmd_login() {
   need_sbx
-  load_config
-  store_github_secret
+  store_github_secret force
+  # Capture a '/login' done inside this directory's sandbox onto the host,
+  # where the next sandbox picks it up.
+  local name
+  name="$(sandbox_name "$PWD")"
+  sandbox_exists "$name" && save_auth_out "$name"
+  return 0
 }
 
 cmd_offline() {
   need_sbx
-  load_config
   local name
   name="$(sandbox_name "$PWD")"
   apply_offline_policy
@@ -387,14 +462,21 @@ Usage:
   safe-pi <args...>       pass args/flags through to pi (e.g. safe-pi --version)
   safe-pi --clone         start pi on a private in-VM git clone (host repo read-only)
   safe-pi --shell         open a shell inside the sandbox
-  safe-pi init            create $CONFIG_FILE and store the GitHub token
-  safe-pi login           re-store the GitHub token on the host
+  safe-pi login           store the GitHub token, and save this sandbox's
+                          provider credentials to the host for the next one
   safe-pi offline         re-apply the local model config to this sandbox
   safe-pi sync            re-install the host's global pi packages into this sandbox
   safe-pi rm              delete the sandbox for the current directory
   safe-pi --help          show this message
 
-Config lives at $CONFIG_FILE.
+There is no config file. The sandbox git identity comes from your host git
+config and the GitHub token from 'gh auth token'. GIT_NAME, GIT_EMAIL,
+GITHUB_TOKEN, OFFLINE_PORT and OFFLINE_MODEL override those from the
+environment.
+Provider credentials are copied into each new sandbox from
+$HOST_AUTH
+so '/login' is a one-time step: run it inside your first sandbox, then
+'safe-pi login' saves it to the host for every later one.
 Each project directory gets its own sandbox; state persists until 'safe-pi rm'.
 Pi configuration is tracked in this repo under extensions/,
 installed-extensions/, skills/ and config/, which ~/.pi links to child by
@@ -413,7 +495,6 @@ EOF
 }
 
 case "${1:-}" in
-  init) cmd_init; exit 0 ;;
   login) shift; cmd_login; exit 0 ;;
   offline) shift; cmd_offline; exit 0 ;;
   sync) shift; cmd_sync; exit 0 ;;
@@ -422,7 +503,6 @@ case "${1:-}" in
 esac
 
 need_sbx
-load_config
 
 CLONE=0
 SHELL_MODE=0

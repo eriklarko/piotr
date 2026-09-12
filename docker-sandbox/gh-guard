@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# gh-guard — blocks gh subcommands that could grant an agent persistent access
+# to the GitHub account itself, rather than to a repository.
+#
+# This is a guardrail, not a security boundary: the agent has sudo inside the
+# VM and the host proxy authenticates any request to api.github.com, however it
+# is made. Scope your token accordingly.
+#
+# Installed as /usr/local/bin/gh by the Dockerfile, which removes any other gh
+# and then asserts that only one is left on PATH — otherwise this wrapper
+# could be sidestepped by calling that path instead. Keep BLOCKED in sync
+# with the agentContext note in spec.yaml.
+set -euo pipefail
+
+BLOCKED="auth repo secret ssh-key gpg-key"
+
+if [ "${PARANOID_MODE:-true}" = "true" ]; then
+  for blocked in $BLOCKED; do
+    if [ "${1:-}" = "$blocked" ]; then
+      echo "[SYSTEM BLOCK] Paranoid mode is active. The agent is not authorized to execute 'gh $1'." >&2
+      exit 1
+    fi
+  done
+fi
+
+exec /usr/lib/pi-kit/gh-real "$@"

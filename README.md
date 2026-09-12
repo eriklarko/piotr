@@ -34,24 +34,42 @@ make bootstrap
 
 `make bootstrap` symlinks the wrappers into `~/.local/bin`, assembles `~/.pi`
 out of this repo's `extensions/`, `installed-extensions/`, `skills/` and
-`config/` directories, seeds `~/.pi-sbx/config` from the tracked template, and installs
-the pi packages. It is idempotent.
+`config/` directories, installs the pi packages, and builds the sandbox image.
+It is idempotent, so re-running it after a failure is safe. The image step
+comes last and needs Docker running and `sbx login` already done.
 
-Three manual steps remain, since none of them belong in git:
+There is no config file to fill in. The sandbox git identity comes from your
+host `git config`, and the GitHub token from `gh auth token`; `GIT_NAME`,
+`GIT_EMAIL`, `GITHUB_TOKEN`, `OFFLINE_PORT` and `OFFLINE_MODEL` override those
+from the environment if you ever need to.
+
+Two manual steps remain, since neither belongs in git:
 
 ```bash
-sbx login          # Docker Sandboxes
 gh auth login      # safe-pi reads the token via `gh auth token`
-unsafe-pi          # then /login for provider credentials
+safe-pi            # then /login inside it, and `safe-pi login` to keep it
 ```
+
+`safe-pi` stores the GitHub token as an sbx secret itself, at sandbox creation.
+Provider credentials you only enter once: run `/login` inside your first
+sandbox, then `safe-pi login` saves them to `~/.pi/agent/auth.json`, and every
+later sandbox is created with them already in place. Setup never runs pi on the
+host.
 
 `make bootstrap` only ever creates symlinks inside `~/.pi`. If one of the
 names it wants is already a real file or directory, it aborts with migration
 instructions rather than overwriting it, so it can never destroy existing
 sessions or memory.
 
-Re-run `safe-pi login` after changing the token — global secrets are injected at
-sandbox creation, so store the token before the sandbox is created.
+`safe-pi login` is not needed before the first run. Use it to rotate the GitHub
+token, and to save a sandbox's provider credentials back to the host. Since
+global secrets are injected at sandbox creation, a rotated token reaches
+existing sandboxes only on recreate (`safe-pi rm` then `safe-pi`).
+
+Provider credentials refresh inside the sandbox, so the host copy drifts; run
+`safe-pi login` again to refresh it. If your provider rotates refresh tokens on
+use, a long-lived sandbox can leave the host copy stale — `/login` in a sandbox
+and `safe-pi login` recovers it.
 
 ## Usage
 
@@ -83,24 +101,24 @@ unsafe-pi --version
 ```
 
 Only `safe-pi` and `unsafe-pi` are on your PATH. The pi binary itself lives
-under `~/.pi-sbx/host-pi/` and is never installed globally.
+under `~/.pi/host-pi/` and is never installed globally.
 
 ### Pi version pin
 
-The package version is pinned in the install step of
-[docker-sandbox/spec.yaml](docker-sandbox/spec.yaml). That file is a static
-manifest and has to carry the version literally, which makes it the single
-source of truth: the Makefile and `unsafe-pi` read the pin back out of it
-rather than keeping a second copy. Bump it with:
+The package version is pinned as `ARG PI_VERSION` in
+[docker-sandbox/Dockerfile](docker-sandbox/Dockerfile), which bakes pi into the
+sandbox image. That is the single source of truth: the Makefile, `unsafe-pi`
+and the image tag in `spec.yaml` all read the pin back out of it rather than
+keeping a second copy. Bump it with:
 
 ```bash
 make upgrade-pi              # latest from npm
 make upgrade-pi VERSION=0.85.0
 ```
 
-That rewrites the pin and refreshes the host install under
-`~/.pi-sbx/host-pi/`. Existing sandboxes keep their old binary until you
-recreate them (`safe-pi rm` then `safe-pi`).
+That rewrites the pin, refreshes the host install under `~/.pi/host-pi/`,
+and rebuilds the sandbox image. Existing sandboxes keep their old image until
+you recreate them (`safe-pi rm` then `safe-pi`).
 
 ### Direct vs clone mode
 
@@ -125,8 +143,10 @@ skills/                agent skills, one directory each
 config/
   settings.json        theme, package list, per-package config
   keybindings.json
-  sbx-config.template  non-secret ~/.pi-sbx/config defaults
-docker-sandbox/        the sbx kit — spec.yaml, including the pi version pin
+docker-sandbox/        the sbx kit
+  spec.yaml            policy: image, env, network allowlist, agent context
+  Dockerfile           the sandbox image, and the pi version pin
+  gh-guard             the gh wrapper baked in at /usr/local/bin/gh
 ```
 
 Everything above is tracked. Nothing else belongs here: if a file is
@@ -147,7 +167,7 @@ and holds both the links back to here and pi's own state as real files:
     skills            -> skills/
     settings.json     -> config/settings.json
     keybindings.json  -> config/keybindings.json
-    auth.json            real   provider credentials
+    auth.json            real   provider credentials, copied into each sandbox
     trust.json           real   machine-local trusted paths
     models-store.json    real   regenerated by pi
     sessions/            real   session history
@@ -209,8 +229,10 @@ Agent memory (used by packages like `@samfp/pi-memory`) lives in
 `~/.pi/memory/`. `safe-pi` mounts it read-write and symlinks the
 VM's `~/.pi/memory` to it, so memory persists across sandboxes and recreates.
 
-`settings.json` and `auth.json` stay per-sandbox; only `extensions/`,
-`sessions/`, and `memory/` are shared via mounts.
+`settings.json` stays per-sandbox. `auth.json` is *seeded* from the host copy at
+creation and writable in the VM thereafter — a copy, not a mount, so a sandbox
+refreshing its credentials does not write to the host. Only `extensions/`,
+`sessions/`, and `memory/` are genuinely shared via mounts.
 
 #### Embedder model
 
@@ -272,11 +294,12 @@ A model server on your host is reachable at `host.docker.internal`, and only
 after you allow it through the proxy.
 
 Start your server (llama.cpp, Ollama, Docker Model Runner, …) on the host, then
-set both values in `~/.pi-sbx/config`:
+pass both values in the environment:
 
 ```sh
-OFFLINE_PORT=1337
-OFFLINE_MODEL=gemma-4-26B-A4B-it-GGUF
+export OFFLINE_PORT=1337
+export OFFLINE_MODEL=gemma-4-26B-A4B-it-GGUF
+safe-pi          # or `safe-pi offline` for a sandbox that already exists
 ```
 
 `safe-pi` then runs `sbx policy allow network localhost:1337` on the host and
@@ -290,12 +313,31 @@ If you change these values after the sandbox exists, apply them with
 ## The kit
 
 [docker-sandbox/spec.yaml](docker-sandbox/spec.yaml) defines pi as a custom
-sandbox agent: base image, install steps, network allowlist, the agent
-context, and the pinned pi version. Validate with:
+sandbox agent, and holds policy only: the image to boot, environment
+variables, the network allowlist, and the agent context.
+
+The tools themselves — pi, a pinned `gh`, the `gh-guard` wrapper, the git
+credential helper — are baked into an image by
+[docker-sandbox/Dockerfile](docker-sandbox/Dockerfile) instead of installed per
+sandbox. Adding a tool means adding a Dockerfile line, not another install
+step in the manifest, and creating a sandbox downloads nothing.
+
+`sbx` keeps its own image store, separate from the host Docker daemon, so the
+image has to be built *and* loaded:
+
+`make bootstrap` does this for you on a new machine. To rebuild after editing
+the Dockerfile:
 
 ```bash
-make validate
+make image        # docker build, then docker save | sbx template load
+make validate     # kit spec, pin, and that the tagged image is in the store
 ```
+
+The image tag carries the pi version (`pi-sandbox:0.85.1`), so a stale image
+cannot masquerade as a current one; `make validate` fails if `spec.yaml` and
+the Dockerfile pin disagree. If the image was never built, `safe-pi` refuses to
+create a sandbox and points at `make image`, rather than letting `sbx` mistake
+the tag for a registry reference and fail with a bare 403.
 
 If pi or a tool gets blocked by the network policy, find the domain in
 `sbx policy log` and add it to `network.allowedDomains`.
@@ -310,18 +352,25 @@ If pi or a tool gets blocked by the network policy, find the domain in
 | Host Docker daemon | Unreachable; the sandbox has its own engine |
 | GitHub token | Stays on the host. The proxy injects it into outbound GitHub requests; `GH_TOKEN` inside the VM is the string `proxy-managed` |
 | Network | Deny-by-default HTTP/HTTPS through the host proxy. Raw TCP, UDP, and ICMP are blocked outright. Hugging Face is opened briefly at creation to cache the embedder model, then closed before the agent starts (see [Embedder model](#embedder-model)) |
+| Provider credentials | **Not protected.** `auth.json` is copied into the VM, so the real model-provider key is present there — unlike the GitHub token. Scope it accordingly |
 | Account-level `gh` commands | `gh-guard` wrapper blocks `auth`, `repo`, `secret`, `ssh-key`, `gpg-key` |
 | Workspace | Read-write by default; use `--clone` for a hard boundary |
 
 ### What this does not protect against
 
-Be clear-eyed about the two soft edges:
+Be clear-eyed about the three soft edges:
 
 **`gh-guard` is a guardrail, not a boundary.** The agent has passwordless sudo
 inside the VM and the host proxy authenticates *any* request to
 `api.github.com` — including plain `curl`. The wrapper stops casual and
 accidental misuse; it cannot stop a determined agent. Scope your token to the
 access you are actually willing to grant.
+
+**Your provider key is inside the VM.** `auth.json` is copied in at creation, so
+anything running in the sandbox can read it — the proxy trick that keeps the
+GitHub token out does not apply, because pi authenticates to the model provider
+itself. This is a deliberate trade for one `/login` instead of one per sandbox.
+Use a key you are willing to have on a machine the agent controls.
 
 **Direct mode gives the agent your working tree.** It can edit `.git/hooks/`,
 `.github/workflows/`, `Makefile`, and IDE task configs — files that execute on
