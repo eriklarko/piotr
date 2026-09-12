@@ -1,7 +1,8 @@
 ---
-tools: [bash, powershell]
+tools: [bash]
 order: 40
 label: "⚠️ danger"
+cycle: false
 ---
 You are operating in Danger mode: the only mode that has bash access. Don't stay here long and be VERY clear about
 what you're doing and why.

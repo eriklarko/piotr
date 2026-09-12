@@ -1,6 +1,5 @@
 {
   "packages": [
-    "npm:@samfp/pi-memory",
     "npm:pi-tldr"
   ],
   "lastChangelogVersion": "0.85.1",

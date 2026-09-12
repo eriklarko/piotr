@@ -32,6 +32,17 @@ export function sortedModeNames(modes: Map<string, { order?: number }>): string[
   });
 }
 
+/**
+ * Same ordering as sortedModeNames, minus modes with `cycle: false`. Used
+ * only by the shift+tab shortcut: a mode like `danger` should be reachable
+ * (via `/mode danger`, autocomplete, the "Available modes" text, and as a
+ * startup fallback -- all of which keep using sortedModeNames), just not
+ * something shift+tab can land on by cycling one step too far.
+ */
+export function cyclableModeNames(modes: Map<string, { order?: number; cycle?: boolean }>): string[] {
+  return sortedModeNames(modes).filter((name) => modes.get(name)?.cycle !== false);
+}
+
 /** True when a `tools` entry is a glob pattern rather than a literal name. */
 export function isToolPattern(entry: string): boolean {
   return entry.includes('*') || entry.includes('?');

@@ -2,7 +2,7 @@
  * Three-Mode Controller Extension
  *
  * Loads operating modes from the `modes/*.md` files bundled alongside this
- * extension (see modes/README.md for the file format) and manages tool
+ * extension (see ../README.md for the file format) and manages tool
  * permissions and system-prompt instructions across them. No mode names, tool
  * lists, or prompts are hardcoded here — everything comes from the mode files.
  *
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import {
   checkPatternIsBounded,
   checkPatternPrivilege,
+  cyclableModeNames,
   expandToolPatterns,
   isToolAllowed,
   isToolPattern,
@@ -45,6 +46,10 @@ interface ModeDefinition {
   writePaths?: string[];
   label: string;
   order?: number;
+  /** False to exclude this mode from the shift+tab cycle. Still reachable via
+   * /mode, autocomplete, and as the startup/fallback mode -- see
+   * cyclableModeNames in utils.ts. Default true. */
+  cycle?: boolean;
 }
 
 const WRITE_PATH_GATED_TOOLS = new Set(['edit', 'write']);
@@ -112,6 +117,15 @@ async function loadModes(): Promise<{ modes: Map<string, ModeDefinition>; errors
       order = frontmatter.order;
     }
 
+    let cycle: boolean | undefined;
+    if (frontmatter.cycle !== undefined) {
+      if (typeof frontmatter.cycle !== 'boolean') {
+        errors.push(`${file}: "cycle" must be a boolean`);
+        continue;
+      }
+      cycle = frontmatter.cycle;
+    }
+
     if (!body.trim()) {
       errors.push(`${file}: empty prompt body`);
     }
@@ -133,6 +147,7 @@ async function loadModes(): Promise<{ modes: Map<string, ModeDefinition>; errors
       writePaths,
       label: typeof frontmatter.label === 'string' ? frontmatter.label : name,
       order,
+      cycle,
     });
   }
 
@@ -291,7 +306,9 @@ export default function modeControllerExtension(pi: ExtensionAPI) {
     description: 'Cycle to next operating mode',
     handler: async (ctx) => {
       await rescan(ctx);
-      const names = sortedModeNames(modes);
+      // Excludes modes with `cycle: false` (e.g. danger): reachable via
+      // /mode, but not something you land on by cycling one step too far.
+      const names = cyclableModeNames(modes);
       if (names.length === 0) return;
       const idx = currentMode ? names.indexOf(currentMode) : -1;
       const next = names[(idx + 1) % names.length]!;
@@ -316,7 +333,7 @@ export default function modeControllerExtension(pi: ExtensionAPI) {
 
       if (names.length === 0) {
         ctx.ui.notify(
-          `No modes configured. Add *.md files under ${MODES_DIR} (see modes/README.md).`,
+          `No modes configured. Add *.md files under ${MODES_DIR} (see ../README.md).`,
           'error',
         );
         return;

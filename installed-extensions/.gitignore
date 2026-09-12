@@ -1,6 +1,8 @@
-# pi ships "*" here to keep its install out of git. We need package.json tracked
-# so `make bootstrap` can reproduce the package set on a new machine.
+# pi ships "*" here to keep its install out of git. We need package.json and
+# package-lock.json tracked so `make bootstrap` reproduces the exact package
+# set (transitive versions included) on a new machine.
 *
 !.gitignore
 !package.json
+!package-lock.json
 !README.md

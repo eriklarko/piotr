@@ -12,25 +12,28 @@
 import {
   checkPatternIsBounded,
   checkPatternPrivilege,
+  cyclableModeNames,
   expandToolPatterns,
   isToolAllowed,
   resolvePlanReview,
   sortedModeNames,
 } from './utils.ts';
 
-// The tool names actually registered in this setup: builtins, scoped-tools,
-// and @samfp/pi-memory. pi-tldr registers no tools.
+// The tool names actually registered in this setup: builtins and
+// scoped-tools. pi-tldr registers no tools. 'custom_*' stands in for a
+// hypothetical future extension's tool family, purely to exercise the glob
+// matching logic below -- nothing in this repo currently registers it.
 const REGISTERED = [
   'bash', 'read', 'edit', 'write', 'grep', 'find', 'ls',
   'git_status', 'git_log', 'git_diff', 'git_add', 'git_commit', 'git_push', 'make',
-  'memory_search', 'memory_remember', 'memory_forget', 'memory_lessons', 'memory_stats',
+  'custom_search', 'custom_remember', 'custom_forget', 'custom_lessons', 'custom_stats',
 ];
 
-const ASK = { tools: ['read', 'grep', 'find', 'ls', 'git_status', 'git_log', 'git_diff', 'memory_*'] };
+const ASK = { tools: ['read', 'grep', 'find', 'ls', 'git_status', 'git_log', 'git_diff', 'custom_*'] };
 const BUILD = {
   tools: [
     'read', 'edit', 'write', 'grep', 'find', 'ls',
-    'git_status', 'git_log', 'git_diff', 'git_add', 'git_commit', 'git_push', 'make', 'memory_*',
+    'git_status', 'git_log', 'git_diff', 'git_add', 'git_commit', 'git_push', 'make', 'custom_*',
   ],
 };
 
@@ -58,28 +61,28 @@ eq('git_commit listed in build is blocked in ask', isToolAllowed(ASK, 'git_commi
 eq('git_commit allowed in build', isToolAllowed(BUILD, 'git_commit'), true);
 
 // --- glob entries ----------------------------------------------------------
-eq('memory_* matches memory_search', isToolAllowed(ASK, 'memory_search'), true);
-eq('memory_* matches memory_stats', isToolAllowed(ASK, 'memory_stats'), true);
-eq('memory_* does not match bash', isToolAllowed(ASK, 'bash'), false);
-eq('memory_* does not match git_commit', isToolAllowed(ASK, 'git_commit'), false);
-eq('memory_* does not match bare memory', isToolAllowed(ASK, 'memory'), false);
-eq('memory_* does not match x_memory_y', isToolAllowed(ASK, 'x_memory_search'), false);
+eq('custom_* matches custom_search', isToolAllowed(ASK, 'custom_search'), true);
+eq('custom_* matches custom_stats', isToolAllowed(ASK, 'custom_stats'), true);
+eq('custom_* does not match bash', isToolAllowed(ASK, 'bash'), false);
+eq('custom_* does not match git_commit', isToolAllowed(ASK, 'git_commit'), false);
+eq('custom_* does not match bare custom', isToolAllowed(ASK, 'custom'), false);
+eq('custom_* does not match x_custom_y', isToolAllowed(ASK, 'x_custom_search'), false);
 
 // --- unbounded patterns rejected at load ----------------------------------
 eq('bare * rejected', checkPatternIsBounded('*') !== undefined, true);
 eq('bare ** rejected', checkPatternIsBounded('**') !== undefined, true);
-eq('memory_* accepted', checkPatternIsBounded('memory_*'), undefined);
+eq('custom_* accepted', checkPatternIsBounded('custom_*'), undefined);
 eq('literal name accepted', checkPatternIsBounded('read'), undefined);
 
 // --- privilege-split namespaces may not be globbed ------------------------
 eq('git_* rejected', checkPatternPrivilege('git_*', REGISTERED).length > 0, true);
 eq('*_commit rejected', checkPatternPrivilege('*_commit', REGISTERED).length > 0, true);
-eq('memory_* not flagged', checkPatternPrivilege('memory_*', REGISTERED).length, 0);
+eq('custom_* not flagged', checkPatternPrivilege('custom_*', REGISTERED).length, 0);
 eq('literal git_commit not flagged', checkPatternPrivilege('git_commit', REGISTERED).length, 0);
 
 // --- expansion feeds setActiveTools ---------------------------------------
 const askActive = expandToolPatterns(ASK.tools, REGISTERED).sort();
-eq('ask expands memory family', askActive.filter((t) => t.startsWith('memory_')).length, 5);
+eq('ask expands custom family', askActive.filter((t) => t.startsWith('custom_')).length, 5);
 eq('ask active excludes bash', askActive.includes('bash'), false);
 eq('ask active excludes write', askActive.includes('write'), false);
 eq('ask active excludes git_push', askActive.includes('git_push'), false);
@@ -116,6 +119,30 @@ eq(
   'ask,plan',
 );
 eq('empty map yields no names', sortedModeNames(new Map()).length, 0);
+
+// --- cyclableModeNames: shift+tab excludes cycle:false, sortedModeNames doesn't
+const modeMapWithCycle = (entries) => new Map(entries.map(([name, order, cycle]) => [name, { order, cycle }]));
+
+eq(
+  'danger absent from cyclableModeNames',
+  cyclableModeNames(modeMapWithCycle([['ask', 10], ['plan', 20], ['build', 30], ['danger', 40, false]])).join(','),
+  'ask,plan,build',
+);
+eq(
+  'danger present in sortedModeNames',
+  sortedModeNames(modeMapWithCycle([['ask', 10], ['plan', 20], ['build', 30], ['danger', 40, false]])).join(','),
+  'ask,plan,build,danger',
+);
+eq(
+  'order preserved otherwise (no cycle:false anywhere)',
+  cyclableModeNames(modeMapWithCycle([['plan', 20], ['ask', 10], ['build', 30]])).join(','),
+  'ask,plan,build',
+);
+eq(
+  'cycle:true is a no-op',
+  cyclableModeNames(modeMapWithCycle([['ask', 10, true], ['danger', 40, false]])).join(','),
+  'ask',
+);
 
 // --- plan review: display never clobbered by assistant text ---------------
 const PLAN_WITH_CHECKLIST = [

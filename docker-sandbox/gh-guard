@@ -10,9 +10,16 @@
 # and then asserts that only one is left on PATH — otherwise this wrapper
 # could be sidestepped by calling that path instead. Keep BLOCKED in sync
 # with the agentContext note in spec.yaml.
+#
+# 'api' is blocked alongside the named subcommands above because it is a raw
+# REST/GraphQL client: 'gh api -X DELETE /repos/...' or a token/key mutation
+# via 'gh api graphql' reaches the exact same endpoints 'auth'/'repo'/
+# 'secret'/'ssh-key'/'gpg-key' exist to name and block, just spelled
+# differently. Blocking the named subcommands without also blocking 'api'
+# would be security theater.
 set -euo pipefail
 
-BLOCKED="auth repo secret ssh-key gpg-key"
+BLOCKED="auth repo secret ssh-key gpg-key api"
 
 if [ "${PARANOID_MODE:-true}" = "true" ]; then
   for blocked in $BLOCKED; do

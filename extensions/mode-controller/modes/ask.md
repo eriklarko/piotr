@@ -1,5 +1,5 @@
 ---
-tools: [read, grep, find, ls, git_status, git_log, git_diff, "memory_*"]
+tools: [read, grep, find, ls, git_status, git_log, git_diff]
 order: 10
 label: "💬 ask"
 ---

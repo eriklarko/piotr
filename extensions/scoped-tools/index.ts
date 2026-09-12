@@ -20,14 +20,21 @@
  *  - Friction is a feature. Complex git invocations are a smell (an agent losing
  *    the plot). Only the 90% path is modeled; add flags when a human hits a wall.
  *
- * The only gate: git_commit and git_push prompt for confirmation, since they
- * publish or rewrite history. Everything else runs freely — the agent is trusted
- * to use the tools it is given. The confirm FAILS OPEN: with no UI (print/JSON
- * mode) there is no one to ask, so the action proceeds unconfirmed.
+ * git_commit and git_push prompt for confirmation, since they publish or
+ * rewrite history. So does edit/write on a Makefile-like path or a git hook
+ * (Makefile, makefile, GNUmakefile, *.mk, .git/hooks/**) — `make` runs a
+ * recipe's shell, and git executes a hook directly, so writing one of these
+ * files is functionally the same privilege as commit/push in a mode that
+ * doesn't otherwise have a shell. Everything else runs freely — the agent is
+ * trusted to use the tools it is given. The confirm FAILS OPEN: with no UI
+ * (print/JSON mode) there is no one to ask, so the action proceeds
+ * unconfirmed.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { relative, resolve } from "node:path";
 import { Type } from "typebox";
+import { isBlockedMakeVar, isGatedWritePath, isSafeRef, isSafeToken, validVar } from "./utils.ts";
 
 const EXEC_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 60_000;
@@ -43,11 +50,6 @@ const CONFIRM_TOOLS = new Set(["git_commit", "git_push"]);
 function truncate(text: string): string {
 	if (text.length <= MAX_OUTPUT_BYTES) return text;
 	return `${text.slice(0, MAX_OUTPUT_BYTES)}\n\n[... output truncated at ${MAX_OUTPUT_BYTES} bytes ...]`;
-}
-
-/** Reject a token that looks like a flag or tries to smuggle extra args. */
-function isSafeToken(token: string): boolean {
-	return token.length > 0 && !token.startsWith("-") && !/\s/.test(token);
 }
 
 interface RunResult {
@@ -227,7 +229,7 @@ export default function scopedToolsExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "git_push",
 		label: "git push",
-		description: "Push commits to a remote (git push). No force push.",
+		description: "Push commits to a remote (git push). No force push, branch deletion, or cross-branch refspecs.",
 		promptSnippet: "Push commits to a remote branch",
 		parameters: Type.Object({
 			remote: Type.Optional(Type.String({ description: "Remote name (e.g. origin)" })),
@@ -236,11 +238,14 @@ export default function scopedToolsExtension(pi: ExtensionAPI) {
 		async execute(_id, params, signal) {
 			const argv = ["push"];
 			if (params.remote != null) {
-				if (!isSafeToken(params.remote)) return paramError(`invalid remote: ${params.remote}`);
+				if (!isSafeRef(params.remote)) return paramError(`invalid remote: ${params.remote}`);
 				argv.push(params.remote);
 			}
 			if (params.branch != null) {
-				if (!isSafeToken(params.branch)) return paramError(`invalid branch: ${params.branch}`);
+				// isSafeRef, not isSafeToken: '+'/':' are git's refspec syntax
+				// (force, delete, or push-to-a-different-branch) and 'branch' is
+				// meant to be a plain name, not a refspec.
+				if (!isSafeRef(params.branch)) return paramError(`invalid branch: ${params.branch}`);
 				argv.push(params.branch);
 			}
 			return run(pi, "git", argv, signal);
@@ -269,8 +274,13 @@ export default function scopedToolsExtension(pi: ExtensionAPI) {
 			}
 			if (params.vars?.length) {
 				for (const v of params.vars) {
-					if (!/^[A-Za-z_][A-Za-z0-9_]*=.*$/.test(v)) {
+					if (!validVar(v)) {
 						return paramError(`variable must be VAR=value: ${v}`);
+					}
+					if (isBlockedMakeVar(v)) {
+						return paramError(
+							`variable not allowed: ${v} (MAKEFILES/MAKEFLAGS/GNUMAKEFLAGS can redirect which Makefile make reads or inject its own flags)`,
+						);
 					}
 				}
 				argv.push(...params.vars);
@@ -285,19 +295,35 @@ export default function scopedToolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// -- confirmation on commit and push -----------------------------------
+	// -- confirmation on commit, push, and Makefile-like/hook writes -------
 	//
-	// The only gate: confirm git_commit and git_push, since they publish or
-	// rewrite history. Everything else (including make and bash, wherever a
-	// mode enables them) runs freely — the agent is trusted to use the tools
-	// it is given. With no UI (print/json mode) confirmation is skipped and the
-	// action proceeds (fail open).
+	// Confirm git_commit and git_push, since they publish or rewrite history.
+	// Also confirm edit/write when the target is a Makefile-like path or a git
+	// hook: those are read by `make`/git as a shell, so writing one is the same
+	// privilege as commit/push in a mode without `bash`. Everything else
+	// (including make and bash itself, wherever a mode enables them) runs
+	// freely — the agent is trusted to use the tools it is given. With no UI
+	// (print/json mode) confirmation is skipped and the action proceeds (fail
+	// open), same as commit/push.
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!CONFIRM_TOOLS.has(event.toolName)) return undefined;
+		let detail: string | undefined;
+
+		if (CONFIRM_TOOLS.has(event.toolName)) {
+			detail = describeMutation(event.toolName, event.input);
+		} else if (event.toolName === "edit" || event.toolName === "write") {
+			const rawPath = (event.input as { path?: unknown }).path;
+			if (typeof rawPath === "string") {
+				const relPath = relative(ctx.cwd, resolve(ctx.cwd, rawPath));
+				if (isGatedWritePath(relPath)) {
+					detail = `${event.toolName === "write" ? "Write" : "Edit"} ${relPath} — make/git treat this as a shell, so this needs the same confirmation as a commit or push.`;
+				}
+			}
+		}
+
+		if (detail == null) return undefined;
 		if (!ctx.hasUI) return undefined; // fail open: no one to ask
 
-		const detail = describeMutation(event.toolName, event.input);
 		const ok = await ctx.ui.confirm(`Allow ${event.toolName}?`, detail);
 		if (!ok) return { block: true, reason: "Blocked by user" };
 

@@ -3,3 +3,7 @@ dev
 experiments
 
 .DS_Store
+
+# extensions/'s devDependencies (typecheck-only; see extensions/package.json).
+# Unlike installed-extensions/, nothing here ships into a sandbox.
+/extensions/node_modules

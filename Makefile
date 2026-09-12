@@ -1,4 +1,4 @@
-.PHONY: bootstrap install uninstall image validate upgrade-pi test-extensions help
+.PHONY: bootstrap install uninstall image validate upgrade-pi test test-extensions typecheck skills-deps help
 
 BIN_DIR := $(HOME)/.local/bin
 PI_LINK := $(HOME)/.pi
@@ -25,8 +25,8 @@ IMAGE := $(IMAGE_REPO):$(PI_VERSION)
 
 # Everything install/uninstall links into ~/.pi, as "<path under ~/.pi>:<repo
 # target>". Only tracked things appear here. pi's own machine-local state
-# (auth.json, trust.json, models-store.json, agent/sessions/, memory/) is real
-# and lives directly in ~/.pi, so it is never linked and never touched.
+# (auth.json, trust.json, models-store.json, agent/sessions/) is real and
+# lives directly in ~/.pi, so it is never linked and never touched.
 PI_LINKS := \
 	agent/extensions:$(EXT_DIR) \
 	agent/npm:$(NPM_DIR) \
@@ -40,15 +40,21 @@ help:
 	@echo "uninstall    remove the safe-pi, unsafe-pi and ~/.pi symlinks"
 	@echo "image        rebuild $(IMAGE) and load it into the sbx image store"
 	@echo "validate     check the kit spec, the pi pin and that the image exists"
+	@echo "test         typecheck + test-extensions, plus shellcheck if it's installed"
 	@echo "test-extensions  run the pure-logic tests for the agent extensions"
+	@echo "typecheck    tsc --noEmit over extensions/ (needs 'npm install --prefix extensions' once)"
+	@echo "skills-deps  npm install for every skills/*/scripts/package.json"
 	@echo "upgrade-pi   bump the pi pin in docker-sandbox/Dockerfile (VERSION=x.y.z or latest)"
 
 # Single entry point for a new machine. Idempotent. Includes the sandbox image:
 # nothing runs without it, and skipping it surfaces much later as an opaque
 # "403 Forbidden: pull failed" from sbx.
 bootstrap: install
+	@command -v npm >/dev/null 2>&1 || (echo "bootstrap: npm not found — install Node.js first" >&2; exit 1)
 	@echo "installing pi packages into $(NPM_DIR)"
 	@npm install --prefix $(NPM_DIR) --silent
+	@echo
+	@$(MAKE) --no-print-directory skills-deps
 	@echo
 	@# Last, because it is the only step needing Docker up and sbx signed in.
 	@# Everything above has already landed if this fails, and re-running is safe.
@@ -102,7 +108,7 @@ uninstall:
 	@rm -f $(BIN_DIR)/safe-pi $(BIN_DIR)/unsafe-pi
 	@echo "removed $(BIN_DIR)/safe-pi and $(BIN_DIR)/unsafe-pi"
 	@# Only ever remove symlinks we created. $(PI_LINK) itself stays: the
-	@# credentials, sessions and memory in there are real files, not ours.
+	@# credentials and sessions in there are real files, not ours.
 	@if [ -L $(PI_LINK) ]; then \
 		rm -f $(PI_LINK); echo "removed the legacy $(PI_LINK) symlink (repo untouched)"; \
 	else \
@@ -143,12 +149,46 @@ validate:
 	@echo "sandbox image $(IMAGE) present"
 	sbx kit validate $(SANDBOX_DIR)
 
+# Everything that can be checked without Docker or sbx: typecheck, the pure-
+# logic tests, and (if installed) shellcheck over the shell entry points.
+# `make image`/`make validate` are the remaining, Docker-dependent checks.
+test: typecheck test-extensions
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		echo "shellcheck safe-pi unsafe-pi $(SANDBOX_DIR)/gh-guard"; \
+		shellcheck safe-pi unsafe-pi $(SANDBOX_DIR)/gh-guard; \
+	else \
+		echo "shellcheck not installed, skipping (brew install shellcheck)"; \
+	fi
+
 # Pure-logic regression tests for the extensions under $(EXT_DIR). The
 # mode-controller test imports the real implementation; the scoped-tools one
 # keeps copies of the pure helpers and must be updated alongside them.
 test-extensions:
 	node --experimental-strip-types $(EXT_DIR)/mode-controller/gate-logic.test.mjs
-	node $(EXT_DIR)/scoped-tools/gate-logic.test.mjs
+	node --experimental-strip-types $(EXT_DIR)/scoped-tools/gate-logic.test.mjs
+
+# extensions/'s own package.json exists only to typecheck against the same pi
+# API surface a sandbox actually runs (see extensions/package.json) -- it
+# ships nothing. First run: npm install --prefix $(EXT_DIR).
+typecheck:
+	@[ -d $(EXT_DIR)/node_modules ] \
+		|| (echo "typecheck: run 'npm install --prefix $(EXT_DIR)' first" >&2; exit 1)
+	@npm exec --prefix $(EXT_DIR) -- tsc -p $(EXT_DIR)/tsconfig.json
+
+# Skills bundle their own optional scripts/ (see skills/README.md). Unlike
+# installed-extensions/, these are installed on the host only: skills/ is
+# mounted read-only into every sandbox (or copied read-only, see safe-pi), so
+# whatever node_modules exists here at mount/copy time is what the sandbox
+# gets. Run this again (or 'safe-pi sync' to refresh an existing sandbox's
+# copy) after adding a skill dependency.
+skills-deps:
+	@command -v npm >/dev/null 2>&1 || (echo "skills-deps: npm not found" >&2; exit 1)
+	@for pkg in $(SKILLS_DIR)/*/scripts/package.json; do \
+		[ -f "$$pkg" ] || continue; \
+		dir=$$(dirname "$$pkg"); \
+		echo "installing skill script dependencies in $$dir"; \
+		npm install --prefix "$$dir" --silent; \
+	done
 
 # Bump the pin, refresh the host-only install under $(HOST_PI_PREFIX), and
 # rebuild the sandbox image. Sandboxes pick up the new image on recreate

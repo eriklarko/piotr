@@ -1,5 +1,5 @@
 ---
-tools: [read, grep, find, ls, edit, write, git_status, git_log, git_diff, "memory_*"]
+tools: [read, grep, find, ls, edit, write, git_status, git_log, git_diff]
 writePaths: ["**/*.md", "**/*.markdown"]
 order: 20
 label: "📋 plan"

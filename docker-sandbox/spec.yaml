@@ -35,6 +35,11 @@ network:
     # npm, for installing packages into a workspace
     - "registry.npmjs.org:443"
     #
+    # REQUIRED, not optional: uncomment whichever model provider you use below
+    # before your first `safe-pi`. None is enabled by default, so `/login`
+    # inside a fresh sandbox has nothing to reach until one of these (or
+    # another provider's domain, added the same way) is uncommented. See
+    # "Setup" in the root README.
     #
     # GitHub Copilot models
     # - "api.githubcopilot.com:443"
@@ -60,7 +65,9 @@ agentContext: |
   - The GitHub token is never present in this VM. `GH_TOKEN` holds a
     placeholder and the host proxy injects the real credential into outbound
     GitHub requests, so `gh` and `git push` work normally.
-  - `gh auth`, `gh repo`, `gh secret`, `gh ssh-key`, and `gh gpg-key` are
-    blocked on purpose. Do not attempt to bypass the wrapper.
+  - `gh auth`, `gh repo`, `gh secret`, `gh ssh-key`, `gh gpg-key`, and `gh api`
+    are blocked on purpose. Do not attempt to bypass the wrapper (including by
+    hitting the GitHub API directly with `curl`/`bash` where those are
+    active — the same account-scoped actions are off limits either way).
   - A service on the host is reachable at `host.docker.internal`, never at
     `localhost` — `localhost` is this VM.

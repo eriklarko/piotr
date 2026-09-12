@@ -1,42 +1,13 @@
-// Regression test for the pure validation logic in index.ts.
-// These functions have no pi dependency, so we mirror them here and assert
-// behavior. If you change the originals in index.ts, update these copies.
-// Run: node gate-logic.test.mjs
+// Regression test for the pure validation logic in utils.ts.
+// Imports the real implementation -- no copies to drift.
+// Run: node --experimental-strip-types gate-logic.test.mjs
 
-// --- copies of the pure logic under test (kept in sync with index.ts) ---
-function isSafeToken(token) {
-  return token.length > 0 && !token.startsWith("-") && !/\s/.test(token);
-}
-function validVar(v){ return /^[A-Za-z_][A-Za-z0-9_]*=.*$/.test(v); }
-
-// git_diff argv construction (mirrors execute() in index.ts)
-function buildDiffArgv(params) {
-  const hasBase = params.base != null;
-  const hasHead = params.head != null;
-  if (hasBase !== hasHead) return { error: "base and head must be given together" };
-  if (hasBase && hasHead && params.staged) return { error: "staged cannot be combined with base/head" };
-
-  const argv = ["diff"];
-  if (hasBase && hasHead) {
-    if (!isSafeToken(params.base)) return { error: `invalid base ref: ${params.base}` };
-    if (!isSafeToken(params.head)) return { error: `invalid head ref: ${params.head}` };
-    argv.push(`${params.base}..${params.head}`);
-  } else if (params.staged) {
-    argv.push("--staged");
-  }
-  if (params.paths?.length) {
-    for (const p of params.paths) {
-      if (p.startsWith("-")) return { error: `path may not start with "-": ${p}` };
-    }
-    argv.push("--", ...params.paths);
-  }
-  return { argv };
-}
+import { buildDiffArgv, isBlockedMakeVar, isGatedWritePath, isSafeRef, isSafeToken, validVar } from "./utils.ts";
 
 let fail = 0;
-function eq(name, got, want){ const ok = got===want; if(!ok){fail++; console.log("FAIL",name,"got",got,"want",want);} else console.log("ok  ",name); }
+function eq(name, got, want) { const ok = got === want; if (!ok) { fail++; console.log("FAIL", name, "got", got, "want", want); } else console.log("ok  ", name); }
 
-// isSafeToken — git_push remote/branch validation
+// isSafeToken — general flag/whitespace rejection
 eq("origin safe", isSafeToken("origin"), true);
 eq("feature/x safe", isSafeToken("feature/x"), true);
 eq("flag unsafe", isSafeToken("--force"), false);
@@ -44,12 +15,44 @@ eq("dash unsafe", isSafeToken("-x"), false);
 eq("space unsafe", isSafeToken("a b"), false);
 eq("empty unsafe", isSafeToken(""), false);
 
+// isSafeRef — git_push remote/branch validation. Adds refspec syntax on top
+// of isSafeToken: '+' forces, ':' can push/delete a different ref than named.
+eq("origin safe ref", isSafeRef("origin"), true);
+eq("feature/x safe ref", isSafeRef("feature/x"), true);
+eq("force-push refspec blocked", isSafeRef("+HEAD:main"), false);
+eq("cross-branch refspec blocked", isSafeRef("HEAD:main"), false);
+eq("delete refspec blocked", isSafeRef(":main"), false);
+eq("bare plus blocked", isSafeRef("+main"), false);
+eq("still rejects flags", isSafeRef("--force"), false);
+
 // make var validation
 eq("VAR=1 ok", validVar("CC=gcc"), true);
 eq("VAR= empty ok", validVar("X="), true);
 eq("--eval blocked", validVar("--eval=$(shell x)"), false);
 eq("leading digit blocked", validVar("1X=y"), false);
 eq("no equals blocked", validVar("target"), false);
+
+// isBlockedMakeVar — MAKEFILES/MAKEFLAGS/GNUMAKEFLAGS can redirect which
+// Makefile is read or inject make's own flags; blocked even though they are
+// syntactically valid VAR=value assignments.
+eq("MAKEFILES blocked", isBlockedMakeVar("MAKEFILES=/tmp/evil.mk"), true);
+eq("MAKEFLAGS blocked", isBlockedMakeVar("MAKEFLAGS=--eval=x"), true);
+eq("GNUMAKEFLAGS blocked", isBlockedMakeVar("GNUMAKEFLAGS=-x"), true);
+eq("CC not blocked", isBlockedMakeVar("CC=gcc"), false);
+
+// isGatedWritePath — edit/write to these paths needs the same confirmation
+// as git_commit/git_push, since they are shell-equivalent in build mode.
+eq("Makefile gated", isGatedWritePath("Makefile"), true);
+eq("makefile gated", isGatedWritePath("makefile"), true);
+eq("GNUmakefile gated", isGatedWritePath("GNUmakefile"), true);
+eq("Makefile in subdirectory gated", isGatedWritePath("docker-sandbox/Makefile"), true);
+eq("*.mk gated", isGatedWritePath("build.mk"), true);
+eq("*.mk in subdirectory gated", isGatedWritePath("scripts/build.mk"), true);
+eq("Makefile.md not gated", isGatedWritePath("Makefile.md"), false);
+eq("git hooks path gated", isGatedWritePath(".git/hooks/pre-commit"), true);
+eq("nested git hooks path gated", isGatedWritePath("sub/.git/hooks/pre-commit"), true);
+eq("ordinary source file not gated", isGatedWritePath("extensions/scoped-tools/index.ts"), false);
+eq("README not gated", isGatedWritePath("README.md"), false);
 
 // git_diff — base/head ref comparison
 eq("base only errors", !!buildDiffArgv({ base: "origin/master" }).error, true);
@@ -61,5 +64,5 @@ eq("unsafe base errors", !!buildDiffArgv({ base: "--force", head: "HEAD" }).erro
 eq("no refs, no staged", JSON.stringify(buildDiffArgv({}).argv), JSON.stringify(["diff"]));
 eq("no refs, staged", JSON.stringify(buildDiffArgv({ staged: true }).argv), JSON.stringify(["diff", "--staged"]));
 
-console.log(fail? `\n${fail} FAILED` : "\nALL PASS");
-process.exit(fail?1:0);
+console.log(fail ? `\n${fail} FAILED` : "\nALL PASS");
+process.exit(fail ? 1 : 0);

@@ -25,6 +25,7 @@ tools: [read, grep, find, ls] # required: active tool names for this mode
 order: 10 # optional: cycle position; lowest is the startup mode
 writePaths: ["**/*.md"] # optional: restrict edit/write to matching paths
 label: "💬 ask" # optional: shown in the footer status; defaults to the mode name
+cycle: false # optional: exclude from shift+tab (still reachable via /mode); default true
 ---
 Prompt text appended to the system prompt while this mode is active.
 ```
@@ -39,6 +40,13 @@ Prompt text appended to the system prompt while this mode is active.
   `order` is the mode used at startup. Values are spaced (10, 20, 30, …) so a new
   mode can be slotted in without renumbering; a mode with no `order` sorts after
   every mode that has one.
+- `cycle: false` — removes this mode from the shift+tab cycle, without
+  removing it from `/mode`, its autocomplete, or the "Available modes" text.
+  `danger` sets this: shift+tab should never be a way to land in the one mode
+  with unrestricted shell access by mashing a key one time too many; typing
+  `/mode danger` deliberately is unaffected. Every other consumer of mode
+  ordering (autocomplete, startup, the missing-mode fallback) keeps using the
+  full, unfiltered order.
 - If `modes/` has no valid `*.md` files, the extension does nothing:
   `/mode` reports the problem instead of silently falling back to any
   built-in defaults.

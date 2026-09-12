@@ -1,5 +1,5 @@
 ---
-tools: [read, edit, write, grep, find, ls, git_status, git_log, git_diff, git_add, git_commit, git_push, make, "memory_*"]
+tools: [read, edit, write, grep, find, ls, git_status, git_log, git_diff, git_add, git_commit, git_push, make]
 order: 30
 label: "🔨 build"
 ---
