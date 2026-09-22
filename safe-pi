@@ -501,12 +501,14 @@ cmd_sync() {
   link_ro_source "$name" "$HOST_SKILLS_DIR" "$RO_COPY_SKILLS" ".pi/agent/skills"
 }
 
+# Extra args go through to 'sbx rm', so 'safe-pi rm --force' skips both the
+# confirmation prompt and the in-use check the way 'sbx rm --force' does.
 cmd_rm() {
   need_sbx
   local name
   name="$(sandbox_name "$PWD")"
   sandbox_exists "$name" || die "no sandbox named '$name'"
-  sbx rm "$name"
+  sbx rm "$name" "$@"
 }
 
 cmd_help() {
@@ -523,6 +525,7 @@ Usage:
   safe-pi offline         re-apply the local model config to this sandbox
   safe-pi sync            re-install the host's global pi packages into this sandbox
   safe-pi rm              delete the sandbox for the current directory
+                          (--force skips the prompt and the in-use check)
   safe-pi --help          show this message
 
 There is no config file. The sandbox git identity comes from your host git
@@ -559,7 +562,7 @@ case "${1:-}" in
   login) shift; cmd_login; exit 0 ;;
   offline) shift; cmd_offline; exit 0 ;;
   sync) shift; cmd_sync; exit 0 ;;
-  rm) shift; cmd_rm; exit 0 ;;
+  rm) shift; cmd_rm "$@"; exit 0 ;;
   -h|--help) cmd_help; exit 0 ;;
 esac
 
