@@ -34,6 +34,16 @@ network:
     - "pi.dev:443"
     # npm, for installing packages into a workspace
     - "registry.npmjs.org:443"
+    # Cursor, for the pi-cursor-sdk package in config/settings.json. Not
+    # commented out like the providers below: the extension refreshes its
+    # model catalog during startup, so without this every session begins with
+    # a "Cursor model discovery failed / blocked by network policy" warning and
+    # a fallback catalog, whether or not Cursor models are used. Auth is not
+    # inherited from Cursor Agent CLI/Desktop -- /login (Use an API key ->
+    # Cursor) or CURSOR_API_KEY inside the sandbox -- and after adding auth
+    # mid-session, /cursor-refresh-models picks up the live catalog without a
+    # restart.
+    - "api.cursor.com:443"
     #
     # REQUIRED, not optional: uncomment whichever model provider you use below
     # before your first `safe-pi`. None is enabled by default, so `/login`
