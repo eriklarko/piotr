@@ -1,5 +1,5 @@
 ---
-tools: [read, grep, find, ls, git_status, git_log, git_diff]
+tools: [read, grep, find, ls, git_status, git_log, git_diff, "cursor_*"]
 order: 10
 label: "💬 ask"
 ---
