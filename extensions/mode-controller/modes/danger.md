@@ -1,5 +1,5 @@
 ---
-tools: [bash]
+tools: [bash, powershell]
 order: 40
 label: "⚠️ danger"
 cycle: false
