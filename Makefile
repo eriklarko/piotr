@@ -5,6 +5,7 @@ PI_LINK := $(HOME)/.pi
 # The repo roots linked into ~/.pi. Read straight from the repo, never through
 # the ~/.pi symlinks.
 EXT_DIR := $(CURDIR)/extensions
+EXTENSION_TESTS := $(sort $(wildcard $(EXT_DIR)/*/*.test.mjs))
 NPM_DIR := $(CURDIR)/installed-extensions
 SKILLS_DIR := $(CURDIR)/skills
 CONFIG_DIR := $(CURDIR)/config
@@ -160,12 +161,11 @@ test: typecheck test-extensions
 		echo "shellcheck not installed, skipping (brew install shellcheck)"; \
 	fi
 
-# Pure-logic regression tests for the extensions under $(EXT_DIR). The
-# mode-controller test imports the real implementation; the scoped-tools one
-# keeps copies of the pure helpers and must be updated alongside them.
+# Pure-logic regression tests discovered in each extension directory.
 test-extensions:
-	node --experimental-strip-types $(EXT_DIR)/mode-controller/gate-logic.test.mjs
-	node --experimental-strip-types $(EXT_DIR)/scoped-tools/gate-logic.test.mjs
+	@set -e; for test in $(EXTENSION_TESTS); do \
+		node --experimental-strip-types "$$test"; \
+	done
 
 # extensions/'s own package.json exists only to typecheck against the same pi
 # API surface a sandbox actually runs (see extensions/package.json) -- it
