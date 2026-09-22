@@ -1,10 +1,13 @@
 {
   "packages": [
-    "npm:pi-tldr"
+    "npm:pi-tldr",
+    "npm:pi-cursor-sdk"
   ],
   "lastChangelogVersion": "0.85.1",
   "theme": "dark",
   "tldr": {
-    "model": "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0"
-  }
+    "model": "openai-codex/gpt-5.6-luna"
+  },
+  "defaultProvider": "amazon-bedrock",
+  "defaultModel": "openai.gpt-5.6-sol"
 }
