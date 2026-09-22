@@ -14,6 +14,13 @@
 export const GLOB_DENIED_PREFIXES = ['git_'];
 
 /**
+ * Tools whose `path` parameter a mode's `writePaths` restriction applies to.
+ * Anything that creates, changes, or removes a file at a path belongs here --
+ * a mode allowed to write only markdown must not be able to delete source.
+ */
+export const WRITE_PATH_GATED_TOOLS = new Set(['edit', 'write', 'delete']);
+
+/**
  * Mode display/cycle order: ascending `order`, then name.
  *
  * Every place that presents or walks the mode list must go through this --

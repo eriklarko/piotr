@@ -37,6 +37,7 @@ Mutating:
 | `git_add` | Stage exact file paths. No `-A` or `.` shorthand. |
 | `git_commit` | Commit staged changes with a message; can `amend`. |
 | `git_push` | Push to a remote/branch. No force push, branch deletion, or cross-branch refspecs, ever. |
+| `delete` | Delete a single file. No directories, no globs, nothing outside the project, nothing inside `.git`. |
 | `make` | Run a make target, with optional `VAR=value` assignments and `-C` directory. |
 
 `make` is the one deliberate exception to "no shell": a Makefile recipe runs
@@ -47,7 +48,8 @@ gate below accounts for.
 ## The gate
 
 `git_commit` and `git_push` ask for confirmation on every call, because they
-publish work or rewrite history. So does `edit`/`write` on a Makefile-like
+publish work or rewrite history. So does `delete`, because removing a file that
+was never staged cannot be undone. So does `edit`/`write` on a Makefile-like
 path (`Makefile`, `makefile`, `GNUmakefile`, `*.mk`) or a git hook
 (`.git/hooks/**`): `make` is a shell, and so is a git hook, so an agent
 editing one of these files in a mode without `bash` is granting itself a
@@ -65,6 +67,7 @@ mind before handing these tools to an unattended run.
 
 `make test-extensions` runs `gate-logic.test.mjs`, which imports the real
 validation logic from [`utils.ts`](utils.ts) — token/refspec validation,
-`make` var checks, and `git_diff` argv construction all live there, the same
+`make` var checks, `delete` path confinement, and `git_diff` argv construction
+all live there, the same
 `index.ts`-imports-from-`utils.ts` pattern [mode-controller](../mode-controller)
 uses, so there is nothing to keep in sync by hand.

@@ -2,7 +2,15 @@
 // Imports the real implementation -- no copies to drift.
 // Run: node --experimental-strip-types gate-logic.test.mjs
 
-import { buildDiffArgv, isBlockedMakeVar, isGatedWritePath, isSafeRef, isSafeToken, validVar } from "./utils.ts";
+import {
+	buildDiffArgv,
+	isBlockedMakeVar,
+	isGatedWritePath,
+	isSafeRef,
+	isSafeToken,
+	resolveDeletePath,
+	validVar,
+} from "./utils.ts";
 
 let fail = 0;
 function eq(name, got, want) { const ok = got === want; if (!ok) { fail++; console.log("FAIL", name, "got", got, "want", want); } else console.log("ok  ", name); }
@@ -53,6 +61,21 @@ eq("git hooks path gated", isGatedWritePath(".git/hooks/pre-commit"), true);
 eq("nested git hooks path gated", isGatedWritePath("sub/.git/hooks/pre-commit"), true);
 eq("ordinary source file not gated", isGatedWritePath("extensions/scoped-tools/index.ts"), false);
 eq("README not gated", isGatedWritePath("README.md"), false);
+
+// resolveDeletePath — delete targets are confined to the project and never
+// inside .git. Purely lexical; the tool does the stat/directory checks.
+const CWD = "/repo";
+eq("relative path resolves", resolveDeletePath(CWD, "src/x.ts").relPath, "src/x.ts");
+eq("absolute path inside cwd resolves", resolveDeletePath(CWD, "/repo/src/x.ts").relPath, "src/x.ts");
+eq("absolute path inside cwd has no error", resolveDeletePath(CWD, "/repo/src/x.ts").error, undefined);
+eq("parent escape errors", !!resolveDeletePath(CWD, "../outside.ts").error, true);
+eq("absolute path outside cwd errors", !!resolveDeletePath(CWD, "/etc/passwd").error, true);
+eq("empty path errors", !!resolveDeletePath(CWD, "").error, true);
+eq("project root errors", !!resolveDeletePath(CWD, ".").error, true);
+eq("git config errors", !!resolveDeletePath(CWD, ".git/config").error, true);
+eq("git hook errors", !!resolveDeletePath(CWD, ".git/hooks/pre-commit").error, true);
+eq("nested git dir errors", !!resolveDeletePath(CWD, "sub/.git/index").error, true);
+eq(".gitignore allowed", resolveDeletePath(CWD, ".gitignore").relPath, ".gitignore");
 
 // git_diff — base/head ref comparison
 eq("base only errors", !!buildDiffArgv({ base: "origin/master" }).error, true);

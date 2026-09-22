@@ -1,3 +1,5 @@
+import { relative, resolve } from "node:path";
+
 /**
  * Pure validation logic for scoped-tools, kept separate from index.ts so
  * gate-logic.test.mjs can import the real implementation instead of keeping
@@ -83,6 +85,32 @@ export function buildDiffArgv(params: DiffParams): DiffResult {
  * which git executes directly on its own triggers (also reachable via
  * git_commit/git_push without an explicit `make` call).
  */
+export interface DeletePathResult {
+	relPath?: string;
+	error?: string;
+}
+
+/**
+ * Turn a model-supplied delete target into a project-relative path, or explain
+ * the refusal. Purely lexical: existence and directory checks belong to the
+ * tool itself. Refuses the project root, anything outside cwd, and anything
+ * inside a `.git` directory — deleting there corrupts the repository and can
+ * remove the very hooks/config that the write gate protects.
+ */
+export function resolveDeletePath(cwd: string, rawPath: string): DeletePathResult {
+	if (rawPath.trim() === "") return { error: "path must not be empty" };
+
+	const relPath = relative(cwd, resolve(cwd, rawPath)).replace(/\\/g, "/");
+	if (relPath === "") return { error: "refusing to delete the project root" };
+	if (relPath === ".." || relPath.startsWith("../")) {
+		return { error: `path is outside the project directory: ${rawPath}` };
+	}
+	if (relPath.split("/").includes(".git")) {
+		return { error: `refusing to delete inside .git: ${relPath}` };
+	}
+	return { relPath };
+}
+
 export function isGatedWritePath(relPath: string): boolean {
 	const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
 	const base = normalized.split("/").pop() ?? normalized;

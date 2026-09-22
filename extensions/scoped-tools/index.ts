@@ -8,6 +8,7 @@
  * Tools:
  *  - git_status, git_log, git_diff   (read-only)
  *  - git_add, git_commit, git_push   (mutating)
+ *  - delete                          (removes a single file)
  *  - make                            (runs a target's Makefile recipe)
  *
  * Design principles (see scoped-tools.md in ~/.pi/plans):
@@ -21,7 +22,8 @@
  *    the plot). Only the 90% path is modeled; add flags when a human hits a wall.
  *
  * git_commit and git_push prompt for confirmation, since they publish or
- * rewrite history. So does edit/write on a Makefile-like path or a git hook
+ * rewrite history. So does delete, which is unrecoverable for unstaged
+ * content. So does edit/write on a Makefile-like path or a git hook
  * (Makefile, makefile, GNUmakefile, *.mk, .git/hooks/**) — `make` runs a
  * recipe's shell, and git executes a hook directly, so writing one of these
  * files is functionally the same privilege as commit/push in a mode that
@@ -32,16 +34,25 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { lstat, rm } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import { Type } from "typebox";
-import { isBlockedMakeVar, isGatedWritePath, isSafeRef, isSafeToken, validVar } from "./utils.ts";
+import {
+	isBlockedMakeVar,
+	isGatedWritePath,
+	isSafeRef,
+	isSafeToken,
+	resolveDeletePath,
+	validVar,
+} from "./utils.ts";
 
 const EXEC_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 60_000;
 
-// Tool names that require per-call confirmation. Only commit and push — the
-// two actions that publish or rewrite history. Everything else runs freely.
-const CONFIRM_TOOLS = new Set(["git_commit", "git_push"]);
+// Tool names that require per-call confirmation. commit and push publish or
+// rewrite history; delete destroys unstaged content unrecoverably. Everything
+// else runs freely.
+const CONFIRM_TOOLS = new Set(["git_commit", "git_push", "delete"]);
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -295,9 +306,60 @@ export default function scopedToolsExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	// -- delete (single file; confirmed, since it is unrecoverable) ---------
+
+	pi.registerTool({
+		name: "delete",
+		label: "delete",
+		description:
+			"Delete a single file. One file per call: no directories, no globs, " +
+			"nothing outside the project directory, nothing inside .git.",
+		promptSnippet: "Delete a single file",
+		parameters: Type.Object({
+			path: Type.String({ minLength: 1, description: "Path of the file to delete" }),
+		}),
+		async execute(_id, params) {
+			const cwd = process.cwd();
+			const { relPath, error } = resolveDeletePath(cwd, params.path);
+			if (error != null) return paramError(error);
+
+			const target = resolve(cwd, params.path);
+			try {
+				// lstat, not stat: a symlink is deleted as a link, never followed.
+				const stats = await lstat(target);
+				if (stats.isDirectory()) {
+					return paramError(`${relPath} is a directory; delete handles one file at a time`);
+				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: `Cannot delete ${relPath}: ${message}` }],
+					details: { code: -1, killed: false },
+					isError: true,
+				};
+			}
+
+			try {
+				await rm(target);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: `Failed to delete ${relPath}: ${message}` }],
+					details: { code: -1, killed: false },
+					isError: true,
+				};
+			}
+			return {
+				content: [{ type: "text", text: `Deleted ${relPath}` }],
+				details: { code: 0, killed: false },
+			};
+		},
+	});
+
 	// -- confirmation on commit, push, and Makefile-like/hook writes -------
 	//
-	// Confirm git_commit and git_push, since they publish or rewrite history.
+	// Confirm git_commit and git_push, since they publish or rewrite history,
+	// and delete, which cannot be undone for unstaged content.
 	// Also confirm edit/write when the target is a Makefile-like path or a git
 	// hook: those are read by `make`/git as a shell, so writing one is the same
 	// privilege as commit/push in a mode without `bash`. Everything else
@@ -339,6 +401,8 @@ function describeMutation(toolName: string, input: unknown): string {
 			return `Commit${i.amend ? " (amend)" : ""}: ${String(i.message ?? "")}`;
 		case "git_push":
 			return `Push to ${String(i.remote ?? "default remote")} ${String(i.branch ?? "")}`.trim();
+		case "delete":
+			return `Delete ${String(i.path ?? "")}`;
 		default:
 			return "This action modifies repository state.";
 	}

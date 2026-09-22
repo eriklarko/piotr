@@ -23,7 +23,7 @@ Each file in `modes/`:
 ---
 tools: [read, grep, find, ls] # required: active tool names for this mode
 order: 10 # optional: cycle position; lowest is the startup mode
-writePaths: ["**/*.md"] # optional: restrict edit/write to matching paths
+writePaths: ["**/*.md"] # optional: restrict edit/write/delete to matching paths
 label: "💬 ask" # optional: shown in the footer status; defaults to the mode name
 cycle: false # optional: exclude from shift+tab (still reachable via /mode); default true
 ---
@@ -33,8 +33,8 @@ Prompt text appended to the system prompt while this mode is active.
 - `tools` — the exact set of tools active while this mode is selected. It is a
   complete allowlist: any tool not listed here is deactivated and blocked while
   this mode is active, whatever extension registered it.
-- `writePaths` — when present, restricts the `edit` and `write` tools to
-  paths matching at least one glob (`*`, `**`, `?` supported, matched
+- `writePaths` — when present, restricts the `edit`, `write` and `delete` tools
+  to paths matching at least one glob (`*`, `**`, `?` supported, matched
   relative to the project root). Omit it for unrestricted write access.
 - `order` — position in the `/mode` list and the shift+tab cycle. The lowest
   `order` is the mode used at startup. Values are spaced (10, 20, 30, …) so a new

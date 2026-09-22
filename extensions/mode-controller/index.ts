@@ -31,6 +31,7 @@ import {
   matchesAnyGlob,
   resolvePlanReview,
   sortedModeNames,
+  WRITE_PATH_GATED_TOOLS,
   type PlanStep,
 } from './utils.ts';
 
@@ -51,8 +52,6 @@ interface ModeDefinition {
    * cyclableModeNames in utils.ts. Default true. */
   cycle?: boolean;
 }
-
-const WRITE_PATH_GATED_TOOLS = new Set(['edit', 'write']);
 
 function toProjectRelativePath(cwd: string, rawPath: string): string {
   const stripped = rawPath.replace(/^@/, '');

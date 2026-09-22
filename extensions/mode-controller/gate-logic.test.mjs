@@ -15,8 +15,10 @@ import {
   cyclableModeNames,
   expandToolPatterns,
   isToolAllowed,
+  matchesAnyGlob,
   resolvePlanReview,
   sortedModeNames,
+  WRITE_PATH_GATED_TOOLS,
 } from './utils.ts';
 
 // The tool names actually registered in this setup: builtins and
@@ -24,7 +26,7 @@ import {
 // hypothetical future extension's tool family, purely to exercise the glob
 // matching logic below -- nothing in this repo currently registers it.
 const REGISTERED = [
-  'bash', 'read', 'edit', 'write', 'grep', 'find', 'ls',
+  'bash', 'read', 'edit', 'write', 'delete', 'grep', 'find', 'ls',
   'git_status', 'git_log', 'git_diff', 'git_add', 'git_commit', 'git_push', 'make',
   'custom_search', 'custom_remember', 'custom_forget', 'custom_lessons', 'custom_stats',
 ];
@@ -32,7 +34,7 @@ const REGISTERED = [
 const ASK = { tools: ['read', 'grep', 'find', 'ls', 'git_status', 'git_log', 'git_diff', 'custom_*'] };
 const BUILD = {
   tools: [
-    'read', 'edit', 'write', 'grep', 'find', 'ls',
+    'read', 'edit', 'write', 'delete', 'grep', 'find', 'ls',
     'git_status', 'git_log', 'git_diff', 'git_add', 'git_commit', 'git_push', 'make', 'custom_*',
   ],
 };
@@ -59,6 +61,17 @@ eq('unknown tool blocked', isToolAllowed(ASK, 'no_such_tool'), false);
 // concept ("managed" tools) that the old gate got wrong.
 eq('git_commit listed in build is blocked in ask', isToolAllowed(ASK, 'git_commit'), false);
 eq('git_commit allowed in build', isToolAllowed(BUILD, 'git_commit'), true);
+eq('delete allowed in build', isToolAllowed(BUILD, 'delete'), true);
+eq('delete blocked in ask', isToolAllowed(ASK, 'delete'), false);
+
+// --- writePaths confines path-taking tools, delete included ---------------
+// A mode allowed to write only markdown must not be able to delete source.
+const MD_ONLY = ['**/*.md'];
+eq('delete is writePath-gated', WRITE_PATH_GATED_TOOLS.has('delete'), true);
+eq('edit is writePath-gated', WRITE_PATH_GATED_TOOLS.has('edit'), true);
+eq('git_add is not writePath-gated', WRITE_PATH_GATED_TOOLS.has('git_add'), false);
+eq('md-only mode blocks deleting src/x.ts', matchesAnyGlob('src/x.ts', MD_ONLY), false);
+eq('md-only mode allows deleting notes.md', matchesAnyGlob('notes.md', MD_ONLY), true);
 
 // --- glob entries ----------------------------------------------------------
 eq('custom_* matches custom_search', isToolAllowed(ASK, 'custom_search'), true);
