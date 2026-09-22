@@ -166,7 +166,7 @@ Pi's configuration is version-controlled here, and `make install` assembles
 by *what a thing is*, not by pi's installation shape:
 
 ```
-extensions/            extensions written here — mode-controller, scoped-tools
+extensions/            extensions written here — mode-controller, model-prompts, scoped-tools
 installed-extensions/  pi's npm prefix for third-party packages
   package.json         the manifest (node_modules/ is a platform-native install)
 skills/                agent skills, one directory each
