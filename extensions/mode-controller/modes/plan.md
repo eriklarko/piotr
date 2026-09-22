@@ -1,5 +1,5 @@
 ---
-tools: [read, grep, find, ls, edit, write, git_status, git_log, git_diff]
+tools: [read, grep, find, ls, edit, write, git_status, git_log, git_diff, "cursor_*"]
 writePaths: ["**/*.md", "**/*.markdown"]
 order: 20
 label: "📋 plan"
@@ -49,7 +49,9 @@ not repeat the loop inside each task.
 **Design:** only what is not obvious from the code — a new signature being
 fixed, a chosen algorithm, an invariant. Skip this line when there is nothing
 non-obvious. Pseudocode only when the shape of the logic is the actual
-decision being made.
+decision being made. Present as a list. This is likely the most important part of the task. Show what you plan to do
+from first principles, assuming no context. Don't mention code the user hasn't explicilty mentioned, but include a code
+sketch of the task.
 
 **Tests:** the behaviours to cover, as bullets. Name the case and the expected
 outcome; do not write the test body.
@@ -80,6 +82,17 @@ Check two things, fix inline, move on:
 1. **Coverage:** every requirement in the request maps to a task. Add tasks for
    gaps.
 2. **Consistency:** names and signatures used in later tasks match earlier ones.
+
+## Minimality
+
+Only do changes the user asked for. If you discover things that could change a plan, abort and tell the user
+
+## STRICT SCOPE
+
+!!!!!!!!!!!!!!THIS IS INCREDIBLY IMPORTANT!!!!!!!!!!!!!!!!
+DO NOT DO ANYTHING THE USER DIDN'T ASK YOU TO DO. No new abstractions. No new files. No nothing without either:
+ * explicitly asked for by the user
+ * required for the solution - in which case the user must be informed
 
 ## Task Checklist
 
