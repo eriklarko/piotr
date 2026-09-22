@@ -228,7 +228,12 @@ read-only, it copies them into the sandbox instead — see
 
 Note that user-level packages are **not** auto-installed by pi — only project
 `.pi/settings.json` packages are. That is why `make bootstrap` runs
-`npm install` against `installed-extensions/` explicitly.
+`npm install` against `installed-extensions/` explicitly, via `make packages`.
+Use that target on its own after editing `installed-extensions/package.json`,
+and never run `npm install` through the `~/.pi/agent/npm` symlink: npm then
+treats the directory as an out-of-tree `file:` dependency and rewrites every
+path in `package-lock.json` as `../../../...`, which is reproducible on exactly
+one machine.
 
 ## Global extensions, skills, and sessions
 

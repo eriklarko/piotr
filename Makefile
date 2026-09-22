@@ -1,4 +1,4 @@
-.PHONY: bootstrap install uninstall image validate upgrade-pi test test-extensions typecheck skills-deps help
+.PHONY: bootstrap install uninstall packages image validate upgrade-pi test test-extensions typecheck skills-deps help
 
 BIN_DIR := $(HOME)/.local/bin
 PI_LINK := $(HOME)/.pi
@@ -39,6 +39,7 @@ help:
 	@echo "bootstrap    one-command setup on a new machine (install + links + packages + image)"
 	@echo "install      symlink safe-pi/unsafe-pi into $(BIN_DIR) and assemble ~/.pi from this repo"
 	@echo "uninstall    remove the safe-pi, unsafe-pi and ~/.pi symlinks"
+	@echo "packages     npm install the pi packages in $(NPM_DIR)"
 	@echo "image        rebuild $(IMAGE) and load it into the sbx image store"
 	@echo "validate     check the kit spec, the pi pin and that the image exists"
 	@echo "test         typecheck + test-extensions, plus shellcheck if it's installed"
@@ -51,9 +52,7 @@ help:
 # nothing runs without it, and skipping it surfaces much later as an opaque
 # "403 Forbidden: pull failed" from sbx.
 bootstrap: install
-	@command -v npm >/dev/null 2>&1 || (echo "bootstrap: npm not found — install Node.js first" >&2; exit 1)
-	@echo "installing pi packages into $(NPM_DIR)"
-	@npm install --prefix $(NPM_DIR) --silent
+	@$(MAKE) --no-print-directory packages
 	@echo
 	@$(MAKE) --no-print-directory skills-deps
 	@echo
@@ -118,6 +117,15 @@ uninstall:
 			if [ -L "$$link" ]; then rm -f "$$link"; echo "removed $$link"; fi; \
 		done; \
 	fi
+
+# The third-party pi packages that ship into a sandbox. Always run against
+# $(NPM_DIR), the real repo path: installing through the ~/.pi/agent/npm
+# symlink instead makes npm treat this directory as an out-of-tree "file:"
+# dependency and rewrite every package-lock.json path as ../../../Code/...
+packages:
+	@command -v npm >/dev/null 2>&1 || (echo "packages: npm not found — install Node.js first" >&2; exit 1)
+	@echo "installing pi packages into $(NPM_DIR)"
+	@npm install --prefix $(NPM_DIR) --silent
 
 # Build the sandbox image and hand it to sbx. sbx keeps its own image store,
 # separate from the host Docker daemon, and only `sbx template load` writes to
