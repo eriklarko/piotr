@@ -1,4 +1,4 @@
-.PHONY: bootstrap install uninstall packages image validate upgrade-pi test test-extensions typecheck skills-deps help
+.PHONY: bootstrap install uninstall packages image validate upgrade-pi test test-bootstrap test-extensions typecheck skills-deps help
 
 BIN_DIR := $(HOME)/.local/bin
 PI_LINK := $(HOME)/.pi
@@ -139,7 +139,7 @@ image:
 	docker build --provenance=false --sbom=false -t $(IMAGE) $(SANDBOX_DIR)
 	@# Chained with && and cleaned up via trap: semicolons here would let a
 	@# failed load be masked by the exit status of the rm that followed it.
-	@tar=$$(mktemp -t pi-sandbox).tar; \
+	@tar=$$(mktemp) || exit; \
 	trap 'rm -f "$$tar"' EXIT; \
 	docker save $(IMAGE) -o "$$tar" && sbx template load "$$tar"
 	@echo "image: loaded $(IMAGE); recreate sandboxes (safe-pi rm && safe-pi) to pick it up"
@@ -161,13 +161,17 @@ validate:
 # Everything that can be checked without Docker or sbx: typecheck, the pure-
 # logic tests, and (if installed) shellcheck over the shell entry points.
 # `make image`/`make validate` are the remaining, Docker-dependent checks.
-test: typecheck test-extensions
+test: typecheck test-extensions test-bootstrap
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		echo "shellcheck safe-pi unsafe-pi $(SANDBOX_DIR)/gh-guard"; \
 		shellcheck safe-pi unsafe-pi $(SANDBOX_DIR)/gh-guard; \
 	else \
 		echo "shellcheck not installed, skipping (brew install shellcheck)"; \
 	fi
+
+# Isolated Makefile regression tests; no real home directory or Docker changes.
+test-bootstrap:
+	node --test tests/bootstrap.test.mjs
 
 # Pure-logic regression tests discovered in each extension directory.
 test-extensions:
