@@ -8,7 +8,7 @@ sandbox:
   # Built from the Dockerfile next to this file. `make image` builds it and
   # loads it into the sbx image store; `make validate` checks that this tag
   # still matches the pi version pinned in the Dockerfile.
-  image: "pi-sandbox:0.85.1"
+  image: "pi-sandbox:0.87.0"
   aiFilename: AGENTS.md
   entrypoint:
     # Private-prefix install (not on PATH).
@@ -22,43 +22,44 @@ environment:
     GITHUB_TOKEN: proxy-managed
     PARANOID_MODE: "true"
 
-network:
-  # Domain-level allowlist. If pi or a tool gets blocked, find the domain in
-  # `sbx policy log` and add it here. Toolchain downloads happen at image build
-  # time on the host, so they do not need an entry.
-  allowedDomains:
-    # GitHub API, git over HTTPS, and release downloads
-    - "github.com:443"
-    - "api.github.com:443"
-    # Model catalog refresh
-    - "pi.dev:443"
-    # npm, for installing packages into a workspace
-    - "registry.npmjs.org:443"
-    # Cursor, for the pi-cursor-sdk package in config/settings.json. Not
-    # commented out like the providers below: the extension refreshes its
-    # model catalog during startup, so without this every session begins with
-    # a "Cursor model discovery failed / blocked by network policy" warning and
-    # a fallback catalog, whether or not Cursor models are used. Auth is not
-    # inherited from Cursor Agent CLI/Desktop -- /login (Use an API key ->
-    # Cursor) or CURSOR_API_KEY inside the sandbox -- and after adding auth
-    # mid-session, /cursor-refresh-models picks up the live catalog without a
-    # restart.
-    - "api.cursor.com:443"
-    #
-    # REQUIRED, not optional: uncomment whichever model provider you use below
-    # before your first `safe-pi`. None is enabled by default, so `/login`
-    # inside a fresh sandbox has nothing to reach until one of these (or
-    # another provider's domain, added the same way) is uncommented. See
-    # "Setup" in the root README.
-    #
-    # GitHub Copilot models
-    # - "api.githubcopilot.com:443"
-    # - "api.individual.githubcopilot.com:443"
-    # - "copilot-proxy.githubusercontent.com:443"
-    # Other model providers pi can be pointed at
-    # - "api.anthropic.com:443"
-    # - "api.openai.com:443"
-    # - "generativelanguage.googleapis.com:443"
+caps:
+  network:
+    # Domain-level allowlist. If pi or a tool gets blocked, find the domain in
+    # `sbx policy log` and add it here. Toolchain downloads happen at image build
+    # time on the host, so they do not need an entry.
+    allow:
+      # GitHub API, git over HTTPS, and release downloads
+      - "github.com:443"
+      - "api.github.com:443"
+      # Model catalog refresh
+      - "pi.dev:443"
+      # npm, for installing packages into a workspace
+      - "registry.npmjs.org:443"
+      # Cursor, for the pi-cursor-sdk package in config/settings.json. Not
+      # commented out like the providers below: the extension refreshes its
+      # model catalog during startup, so without this every session begins with
+      # a "Cursor model discovery failed / blocked by network policy" warning and
+      # a fallback catalog, whether or not Cursor models are used. Auth is not
+      # inherited from Cursor Agent CLI/Desktop -- /login (Use an API key ->
+      # Cursor) or CURSOR_API_KEY inside the sandbox -- and after adding auth
+      # mid-session, /cursor-refresh-models picks up the live catalog without a
+      # restart.
+      - "api.cursor.com:443"
+      #
+      # REQUIRED, not optional: uncomment whichever model provider you use below
+      # before your first `safe-pi`. None is enabled by default, so `/login`
+      # inside a fresh sandbox has nothing to reach until one of these (or
+      # another provider's domain, added the same way) is uncommented. See
+      # "Setup" in the root README.
+      #
+      # GitHub Copilot models
+      # - "api.githubcopilot.com:443"
+      # - "api.individual.githubcopilot.com:443"
+      # - "copilot-proxy.githubusercontent.com:443"
+      # Other model providers pi can be pointed at
+      # - "api.anthropic.com:443"
+      # - "api.openai.com:443"
+      # - "generativelanguage.googleapis.com:443"
 
 agentContext: |
   ## Sandbox environment

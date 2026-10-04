@@ -3,7 +3,7 @@
     "npm:pi-tldr",
     "npm:pi-cursor-sdk"
   ],
-  "lastChangelogVersion": "0.85.1",
+  "lastChangelogVersion": "0.87.0",
   "theme": "dark",
   "tldr": {
     "model": "openai-codex/gpt-5.6-luna"

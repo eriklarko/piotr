@@ -11,7 +11,7 @@ FROM docker/sandbox-templates:shell
 # Single source of truth for the pi version. `make upgrade-pi` rewrites this
 # line, and the Makefile reads it back out for the image tag, the spec.yaml
 # image reference and the host-side install.
-ARG PI_VERSION=0.85.1
+ARG PI_VERSION=0.87.0
 ARG GH_VERSION=2.83.0
 # Set by buildx. "amd64" or "arm64" — also how gh names its release assets.
 ARG TARGETARCH

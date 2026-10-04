@@ -65,7 +65,7 @@ Three manual steps remain — the first because it's a choice only you can
 make, the other two because neither belongs in git:
 
 1. **Pick a model provider.** No provider's domain is allowlisted by default
-   (see `network.allowedDomains` in
+   (see `caps.network.allow` in
    [`docker-sandbox/spec.yaml`](docker-sandbox/spec.yaml)) — without this
    step `/login` inside a fresh sandbox has nothing it's allowed to reach.
    Uncomment the domain for the provider you use (Anthropic, OpenAI, Gemini,
@@ -353,7 +353,7 @@ create a sandbox and points at `make image`, rather than letting `sbx` mistake
 the tag for a registry reference and fail with a bare 403.
 
 If pi or a tool gets blocked by the network policy, find the domain in
-`sbx policy log` and add it to `network.allowedDomains`.
+`sbx policy log` and add it to `caps.network.allow`.
 
 > Kits are experimental. Docker may change the spec format.
 

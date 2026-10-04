@@ -81,5 +81,5 @@ something you wrote.
 
 A skill's `SKILL.md` cannot itself add to the sandbox's network allowlist. If
 a skill needs a new domain (an API it calls directly, not through `gh` or an
-already-allowed host), add it to `network.allowedDomains` in
+already-allowed host), add it to `caps.network.allow` in
 [`../docker-sandbox/spec.yaml`](../docker-sandbox/spec.yaml).
