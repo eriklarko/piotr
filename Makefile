@@ -51,7 +51,20 @@ help:
 # Single entry point for a new machine. Idempotent. Includes the sandbox image:
 # nothing runs without it, and skipping it surfaces much later as an opaque
 # "403 Forbidden: pull failed" from sbx.
-bootstrap: install
+bootstrap:
+	@command -v node >/dev/null 2>&1 \
+		|| (echo "bootstrap: Node.js 22.18.0 or later is required — install Node.js with npm included" >&2; exit 1)
+	@node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 18)) { console.error("bootstrap: Node.js 22.18.0 or later is required (found " + process.versions.node + ") — upgrade Node.js"); process.exit(1); }'
+	@command -v npm >/dev/null 2>&1 \
+		|| (echo "bootstrap: npm not found — install npm alongside Node.js" >&2; exit 1)
+	@case ":$$PATH:" in \
+		*":$(BIN_DIR):"*) ;; \
+		*) echo "bootstrap: $(BIN_DIR) must be a complete PATH entry" >&2; \
+		   echo 'Run: export PATH="$(BIN_DIR):$$PATH"' >&2; \
+		   echo "Persist that export in your shell startup file, then re-run make bootstrap." >&2; \
+		   exit 1 ;; \
+	esac
+	@$(MAKE) --no-print-directory install
 	@$(MAKE) --no-print-directory packages
 	@echo
 	@$(MAKE) --no-print-directory skills-deps

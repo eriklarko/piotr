@@ -18,6 +18,7 @@ The full version is below; this is the same steps with no explanation.
 ```bash
 brew trust docker/tap && brew install docker/tap/sbx && sbx login
 git clone <this-repo> && cd pi-coding-agent-container
+export PATH="$HOME/.local/bin:$PATH"
 make bootstrap
 $EDITOR docker-sandbox/spec.yaml   # uncomment your model provider's domain
 gh auth login
@@ -29,8 +30,8 @@ safe-pi login                      # keep the credentials for later sandboxes
 
 - [Docker Desktop](https://docs.docker.com/get-started/get-docker/) or Docker Engine
 - The `sbx` CLI
-- Node.js (`npm`) — used on the host by `make bootstrap`, not inside the
-  sandbox
+- Node.js 22.18.0 or later, with `npm` — used on the host by `make bootstrap`
+- `~/.local/bin` on your PATH (or the configured `BIN_DIR` when overriding it)
 - The [`gh` CLI](https://cli.github.com/), signed in (`gh auth login`) — how
   `safe-pi` gets a GitHub token to hand to sandboxes
 
@@ -47,8 +48,15 @@ This repo is also the source of truth for the pi configuration itself — see
 
 ```bash
 git clone <this-repo> && cd pi-coding-agent-container
+export PATH="$HOME/.local/bin:$PATH"
 make bootstrap
 ```
+
+Before changing anything, `make bootstrap` checks Node.js, npm, and that its
+wrapper directory is a complete PATH entry. The directory need not exist yet.
+If needed, run `export PATH="$HOME/.local/bin:$PATH"` and persist that export
+in your shell startup file (for example, `~/.bashrc` or `~/.zshrc`). Bootstrap
+never edits shell configuration for you.
 
 `make bootstrap` symlinks the wrappers into `~/.local/bin`, assembles `~/.pi`
 out of this repo's `extensions/`, `installed-extensions/`, `skills/` and

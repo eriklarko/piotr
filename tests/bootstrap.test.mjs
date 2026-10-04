@@ -25,8 +25,10 @@ function fixture(t, options = {}) {
   mkdirSync(home);
   mkdirSync(join(root, 'docker-sandbox'));
   writeFileSync(join(root, 'Makefile'), readFileSync(join(repo, 'Makefile')));
+  writeFileSync(join(root, 'safe-pi'), '');
+  writeFileSync(join(root, 'unsafe-pi'), '');
   writeFileSync(join(root, 'docker-sandbox/Dockerfile'), 'ARG PI_VERSION=0.87.0\n');
-  for (const name of ['sed', 'head', 'rm', 'mkdir', 'ln', 'dirname']) {
+  for (const name of ['sed', 'head', 'rm', 'mkdir', 'ln', 'dirname', 'echo']) {
     symlinkSync(executable(name), join(bin, name));
   }
   symlinkSync(make, join(bin, 'make'));
@@ -56,14 +58,22 @@ function fixture(t, options = {}) {
     : > "$TEST_ARCHIVE"
     printf '%s\\n' "$TEST_ARCHIVE"
   `);
+  if (!options.missingNode) {
+    stub('node', `exec '${process.execPath}' -e 'Object.defineProperty(process.versions, "node", { value: process.env.TEST_NODE_VERSION }); eval(process.argv[1]);' "$2"`);
+  }
+  if (!options.missingNpm) stub('npm', 'echo "npm $*" >> "$TEST_LOG"');
+  const wrapperDir = join(home, options.customBin ? 'custom-bin' : '.local/bin');
+  const path = options.pathMode === 'missing' ? bin
+    : `${bin}:${wrapperDir}${options.pathMode === 'substring' ? '-other' : ''}`;
   return {
-    root, home, archive,
+    root, home, archive, wrapperDir,
     log: () => existsSync(log) ? readFileSync(log, 'utf8') : '',
-    run: (target) => spawnSync(make, ['--no-print-directory', target], {
+    run: (target) => spawnSync(make, ['--no-print-directory', target,
+      ...(options.customBin ? [`BIN_DIR=${wrapperDir}`] : [])], {
       cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, MAKEFLAGS: '', MFLAGS: '', HOME: home, PATH: bin,
-        TEST_LOG: log, TEST_ARCHIVE: archive },
+      env: { ...process.env, MAKEFLAGS: '', MFLAGS: '', HOME: home, PATH: path,
+        TEST_LOG: log, TEST_ARCHIVE: archive, TEST_NODE_VERSION: options.nodeVersion ?? '24.0.0' },
     }),
   };
 }
@@ -92,4 +102,48 @@ test('image stops before save or load when mktemp fails', (t) => {
   assert.ok(!f.log().includes('save:'), f.log());
   assert.ok(!f.log().includes('load:'), f.log());
   assert.equal(existsSync(f.archive), false);
+});
+
+for (const [name, options, message] of [
+  ['missing Node', { missingNode: true }, /Node.js.*22\.18/],
+  ['Node 20', { nodeVersion: '20.19.0' }, /Node.js.*22\.18/],
+  ['Node 22.17', { nodeVersion: '22.17.0' }, /Node.js.*22\.18/],
+  ['missing npm', { missingNpm: true }, /npm.*not found/],
+  ['missing wrapper directory in PATH', { pathMode: 'missing' }, /PATH/],
+  ['substring-only PATH match', { pathMode: 'substring' }, /PATH/],
+]) {
+  test(`bootstrap rejects ${name} before changing anything`, (t) => {
+    const f = fixture(t, options);
+    const result = f.run('bootstrap');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, message);
+    assert.equal(existsSync(join(f.home, '.pi')), false);
+    assert.equal(existsSync(f.wrapperDir), false);
+    assert.equal(f.log(), '', 'no packages or images should be created');
+    if (options.pathMode) {
+      assert.ok((result.stdout + result.stderr).includes(`export PATH="${f.wrapperDir}:$PATH"`));
+      assert.match(result.stdout + result.stderr, /shell startup file/);
+    }
+  });
+}
+
+for (const nodeVersion of ['22.18.0', '24.0.0']) {
+  test(`bootstrap proceeds with Node ${nodeVersion} and a not-yet-created PATH directory`, (t) => {
+    const f = fixture(t, { nodeVersion });
+    assert.equal(existsSync(f.wrapperDir), false);
+    const result = f.run('bootstrap');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.ok(existsSync(join(f.wrapperDir, 'safe-pi')));
+    assert.ok(existsSync(join(f.wrapperDir, 'unsafe-pi')));
+    assert.ok(existsSync(join(f.home, '.pi')));
+    assert.match(f.log(), /npm install/);
+    assert.match(f.log(), /sbx template load/);
+  });
+}
+
+test('bootstrap accepts the configured BIN_DIR as a complete PATH entry', (t) => {
+  const f = fixture(t, { customBin: true });
+  const result = f.run('bootstrap');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(existsSync(join(f.wrapperDir, 'safe-pi')));
 });
