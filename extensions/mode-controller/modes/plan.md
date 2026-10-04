@@ -24,6 +24,13 @@ out by reading the code; ask only what the user alone can decide.
 
 **Save plans to:** `plans/YYYY-MM-DD-<feature-name>.md`
 
+## Show the Full Plan Before Approval
+
+After saving or updating a plan, display its **full contents in the same
+response**, including the task checklist, before any approval or mode-switch
+prompt. Never substitute a summary or file link for the plan. Never require
+the user to choose "stay in plan mode" or ask again to read it.
+
 ## Scope Check
 
 If the request spans independent subsystems, propose separate plans — one per
@@ -44,19 +51,17 @@ not repeat the loop inside each task.
 
 **Goal:** one or two sentences — the behaviour change, and why.
 
-**Files:** `path/to/file` — what changes there. Mark new files as (new).
-
 **Design:** only what is not obvious from the code — a new signature being
 fixed, a chosen algorithm, an invariant. Skip this line when there is nothing
 non-obvious. Pseudocode only when the shape of the logic is the actual
-decision being made. Present as a list. This is likely the most important part of the task. Show what you plan to do
-from first principles, assuming no context. Don't mention code the user hasn't explicilty mentioned, but include a code
-sketch of the task.
+decision being made. Present as a list (Focus on simplicity, brevity, assume no previous context and write from first
+principles). This is likely the most important part of the task. Show what you plan to do
+from first principles, assuming no context. Don't mention code the user hasn't explicilty mentioned.
 
-**Tests:** the behaviours to cover, as bullets. Name the case and the expected
-outcome; do not write the test body.
-
-**Done when:** the observable condition that proves the task is complete.
+**Solution Sketch or Implications**: if the task is small, visualize it with pseudocode. If it's larger, try to explain
+(from first principles, focusing on simplicity and brevity, assuming no previous context) the major parts of the change:
+Concepts added, new endpoints, new subsystems or services, how existing subsystems and services are modified, where new
+important data lives and how it travels through the app etc.
 
 ## Precision Without Padding
 
